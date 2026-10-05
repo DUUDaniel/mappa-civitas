@@ -78,7 +78,37 @@
       .selected { pointer-events: auto; display: flex; gap: 8px; padding: 8px 12px; }
       .selected strong { display: block; font-size: 14px; font-weight: 500; }
       .selected span { font-size: 12px; color: var(--muted); }
-      aside { width: 100%; border-top: 1px solid var(--line); display: flex; flex-direction: column; }
+      aside { width: 100%; border-top: 1px solid var(--line); display: flex; flex-direction: column; background: var(--paper); }
+      aside h2 { font-size: 1.7rem; }
+      aside h3 { margin: 0; font-family: var(--sans); font-size: 12px; font-weight: 500; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
+      .pad { display: grid; gap: 16px; padding: 16px; }
+      .stack { display: grid; gap: 8px; }
+      .split { border-top: 1px solid var(--line); padding-top: 16px; }
+      .lead, .warn { margin: 0; font-size: 14px; text-wrap: pretty; }
+      .lead { color: var(--muted); }
+      .warn { color: var(--cinnabar); }
+      .sports { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+      .sport, .back {
+        border: 1px solid var(--line); background: var(--paper); color: var(--ink);
+      }
+      .sport {
+        min-height: 76px; text-align: left; border-radius: 12px; padding: 16px 12px;
+        font-family: var(--display); font-size: 18px;
+      }
+      .head { display: flex; align-items: center; gap: 12px; }
+      .back { height: 44px; border-radius: 999px; padding: 0 16px; }
+      .partner { display: flex; justify-content: space-between; gap: 12px; border: 1px solid var(--line); border-radius: 12px; padding: 12px; }
+      .who { margin: 0; font-size: 14px; font-weight: 500; }
+      .remove { border: 0; background: transparent; color: var(--cinnabar); font-size: 12px; }
+      .partner-form { display: grid; gap: 8px; padding: 0; border: 0; }
+      .option { border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+      .option.active { border-color: var(--cinnabar); background: var(--plate); }
+      .option .card { border: 0; background: transparent; }
+      .detail { display: grid; gap: 12px; padding: 0 12px 12px; }
+      .modes { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; }
+      .mode { height: 40px; border-radius: 999px; border: 1px solid var(--line); background: transparent; font-size: 12px; }
+      .mode.on { background: var(--cinnabar); color: var(--cinnabar-ink); border-color: var(--cinnabar); }
+      .leg { margin: 0; display: flex; justify-content: space-between; gap: 12px; padding-left: 8px; font-size: 14px; }
       .filters { display: flex; gap: 8px; overflow-x: auto; padding: 12px 16px; border-bottom: 1px solid var(--line); }
       .chip {
         height: 44px; flex: none; border-radius: 999px; border: 1px solid var(--line);
@@ -112,7 +142,7 @@
       @media (min-width: 1024px) {
         .body { flex-direction: row; }
         .map { min-height: 0; }
-        aside { width: 24rem; border-top: 0; border-left: 1px solid var(--line); }
+        aside { width: 26rem; border-top: 0; border-left: 1px solid var(--line); overflow: auto; }
         .list { max-height: none; flex: 1; }
       }
     </style>
@@ -147,27 +177,11 @@
           </div>
           <button type="button" class="locate" id="locate">My location</button>
         </section>
-        <aside>
-          <div class="filters" id="filters"></div>
-          <div class="list" id="list"></div>
-          <form id="enroll">
-            <h2>Enroll a gathering</h2>
-            <label>Name <input name="host" required /></label>
-            <label>Sport
-              <select name="sport" id="sport-select"></select>
-            </label>
-            <label>Place <input name="place" required /></label>
-            <div class="pair">
-              <label>City <input name="city" required /></label>
-              <label>When <input name="when" required /></label>
-            </div>
-            <button class="submit" type="submit">Add to the board</button>
-          </form>
-        </aside>
+        <aside id="rail"></aside>
       </div>
     </div>
     <script src="./amap.js"></script>
-    <script src="./board.js"></script>
+    <script src="./planner.js"></script>
     <script>
       document.getElementById("locate").addEventListener("click", function () {
         var button = document.getElementById("locate");
