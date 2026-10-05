@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Mappa Civitas</title>
+    <meta name="description" content="A civic map for sport. Frame ready for Amap." />
+    <meta name="theme-color" content="#1c1915" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,520;9..144,640&family=Outfit:wght@400;500;600&display=swap" rel="stylesheet" />
+    <style>
+      :root { --paper:#f3eee4; --ink:#1c1915; --muted:#6f675c; --line:#d9d0c2; --plate:#e8e1d3; --cinnabar:#b8432f; --cinnabar-ink:#fff8f4; --display:"Fraunces","Iowan Old Style",Georgia,serif; --sans:"Outfit",system-ui,sans-serif; }
+      * { box-sizing: border-box; }
+      html { -webkit-font-smoothing: antialiased; }
+      body { margin: 0; min-height: 100dvh; background: var(--paper); color: var(--ink); font-family: var(--sans); }
+      button { font: inherit; cursor: pointer; }
+      h1, h2 { text-wrap: balance; font-family: var(--display); font-weight: 520; margin: 0; }
+      .app { min-height: 100dvh; display: flex; flex-direction: column; }
+      header { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 24px; border-bottom: 1px solid var(--line); }
+      .brand { display: flex; align-items: center; gap: 12px; }
+      .mark { width: 40px; height: 40px; border: 1px solid var(--line); border-radius: 999px; display: grid; place-items: center; color: var(--cinnabar); }
+      .sub { margin: 4px 0 0; font-size: 12px; color: var(--muted); }
+      .status { border: 1px solid var(--line); border-radius: 999px; padding: 8px 12px; font-size: 12px; color: var(--muted); }
+      .body { display: flex; flex: 1; flex-direction: column; min-height: 0; }
+      .map { position: relative; min-height: 24rem; flex: 1; }
+      #amap-mount { position: absolute; inset: 0; }
+      .plate { position: absolute; inset: 0; pointer-events: none; background-color: var(--plate); background-image: linear-gradient(to right, color-mix(in srgb, var(--ink) 12%, transparent) 1px, transparent 1px), linear-gradient(to bottom, color-mix(in srgb, var(--ink) 12%, transparent) 1px, transparent 1px), linear-gradient(to right, color-mix(in srgb, var(--cinnabar) 45%, transparent) 1px, transparent 1px), linear-gradient(to bottom, color-mix(in srgb, var(--cinnabar) 45%, transparent) 1px, transparent 1px); background-size: 48px 48px, 48px 48px, 240px 240px, 240px 240px; background-position: center; }
+      #amap-mount[data-loaded="true"] + .plate { display: none; }
+      .badge, .card, .empty { border: 1px solid var(--line); border-radius: 12px; background: var(--paper); }
+      .badge { position: absolute; top: 16px; left: 16px; display: flex; gap: 8px; align-items: center; padding: 8px 12px; }
+      .center { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); text-align: center; display: flex; flex-direction: column; align-items: center; gap: 12px; }
+      .cross { width: 64px; height: 64px; border: 1px solid var(--cinnabar); border-radius: 999px; display: grid; place-items: center; }
+      .dot { width: 8px; height: 8px; border-radius: 999px; background: var(--cinnabar); }
+      .center p { margin: 0; max-width: 22rem; color: var(--muted); font-size: 14px; text-wrap: pretty; }
+      .foot { position: absolute; right: 16px; bottom: 16px; left: 16px; }
+      .foot p { margin: 0; font-size: 12px; color: var(--muted); max-width: 28rem; }
+      aside { width: 100%; border-top: 1px solid var(--line); display: flex; flex-direction: column; }
+      .filters { display: flex; gap: 8px; overflow-x: auto; padding: 12px 16px; border-bottom: 1px solid var(--line); }
+      .chip { height: 44px; flex: none; border-radius: 999px; border: 1px solid var(--line); background: var(--paper); color: var(--ink); padding: 0 16px; }
+      .chip.active { background: var(--cinnabar); color: var(--cinnabar-ink); border-color: var(--cinnabar); }
+      .list { display: flex; flex-direction: column; gap: 8px; padding: 16px; max-height: 20rem; overflow: auto; }
+      .list-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 4px; }
+      .count { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+      .card { text-align: left; padding: 12px; color: inherit; }
+      .card.active { border-color: var(--cinnabar); background: var(--plate); }
+      .card .row { display: flex; justify-content: space-between; gap: 12px; font-size: 14px; font-weight: 500; }
+      .meta { display: block; margin-top: 4px; font-size: 12px; color: var(--muted); font-weight: 400; }
+      .yours { color: var(--cinnabar); font-size: 12px; font-weight: 500; }
+      .empty { border-style: dashed; padding: 24px 12px; color: var(--muted); font-size: 14px; }
+      form { display: grid; gap: 12px; padding: 16px; border-top: 1px solid var(--line); }
+      label { display: grid; gap: 4px; font-size: 12px; color: var(--muted); }
+      input, select { height: 44px; width: 100%; border: 1px solid var(--line); border-radius: 12px; background: var(--paper); color: var(--ink); padding: 0 12px; font: inherit; font-size: 14px; }
+      .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+      .submit { height: 44px; border: 0; border-radius: 12px; background: var(--cinnabar); color: var(--cinnabar-ink); font-weight: 500; }
+      @media (min-width: 1024px) { .body { flex-direction: row; } .map { min-height: 0; } aside { width: 24rem; border-top: 0; border-left: 1px solid var(--line); } .list { max-height: none; flex: 1; } }
+    </style>
+  </head>
+  <body>
+    <div class="app">
+      <header>
+        <div class="brand">
+          <div class="mark" aria-hidden="true">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75"><circle cx="12" cy="12" r="10"></circle><polygon points="16.24 7.76 14.12 14.12 7.76 16.24 9.88 9.88 16.24 7.76"></polygon></svg>
+          </div>
+          <div>
+            <h1>Mappa Civitas</h1>
+            <p class="sub">A civic map for sport</p>
+          </div>
+        </div>
+        <p class="status">Amap not connected</p>
+      </header>
+      <div class="body">
+        <section class="map" aria-label="Map">
+          <div id="amap-mount" data-amap-slot="true"></div>
+          <div class="plate">
+            <div class="badge"><strong>Amap slot</strong></div>
+            <div class="center">
+              <div class="cross"><span class="dot"></span></div>
+              <h2>Tiles mount here</h2>
+              <p>Mainland China map, search, and routes plug into this plate. The frame stays until a key is added.</p>
+            </div>
+            <div class="foot"><p>Mount <strong>#amap-mount</strong> · call <strong>loadAmap()</strong> from amap.js</p></div>
+          </div>
+        </section>
+        <aside>
+          <div class="filters" id="filters"></div>
+          <div class="list" id="list"></div>
+          <form id="enroll">
+            <h2>Enroll a gathering</h2>
+            <label>Name <input name="host" required /></label>
+            <label>Sport <select name="sport" id="sport-select"></select></label>
+            <label>Place <input name="place" required /></label>
+            <div class="pair">
+              <label>City <input name="city" required /></label>
+              <label>When <input name="when" required /></label>
+            </div>
+            <button class="submit" type="submit">Add to the board</button>
+          </form>
+        </aside>
+      </div>
+    </div>
+    <script src="./amap.js"></script>
+    <script src="./board.js"></script>
+  </body>
+</html>
