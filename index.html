@@ -170,7 +170,17 @@
     <script src="./board.js"></script>
     <script>
       document.getElementById("locate").addEventListener("click", function () {
-        locateUser();
+        var button = document.getElementById("locate");
+        var status = document.getElementById("status");
+        locateUser().then(function (ok) {
+          if (ok) {
+            if (button) button.textContent = "My location";
+            if (status) status.textContent = "Amap";
+            return;
+          }
+          if (button) button.textContent = "Location blocked";
+          if (status) status.textContent = "Allow location, then tap again";
+        });
       });
       loadAmap({
         key: "556f12bb8c01cd9a3bdb6f0681ed9c2a",
