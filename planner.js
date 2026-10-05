@@ -264,13 +264,19 @@ function drawMeeting(list, selectedId, group, legs) {
     }));
   });
   group.forEach((person, index) => {
-    if (person.name === "You") return;
+    const color = COLORS[index % COLORS.length];
+    const pin = personPin(color, person.name);
+    if (person.name === "You" && window.__mappaMarker) {
+      window.__mappaMarker.setPosition(person.position);
+      if (window.__mappaMarker.setContent) window.__mappaMarker.setContent(pin);
+      return;
+    }
     addOverlay(new window.AMap.Marker({
       position: person.position,
       title: person.name,
-      label: { content: person.name, direction: "right" },
+      zIndex: 120,
+      content: pin,
     }));
-    void index;
   });
   (legs || []).forEach((leg) => {
     if (!leg.path || !leg.path.length) return;
