@@ -402,12 +402,72 @@ function readPlan(plan) {
   return { minutes: Math.max(1, Math.round((plan.time || 0) / 60)), km: (plan.distance || 0) / 1000, path: path };
 }
 
+function shiftKm(center, eastKm, northKm) {
+  const scale = Math.cos((center[1] * Math.PI) / 180) * 111.32;
+  return [center[0] + eastKm / scale, center[1] + northKm / 111.32];
+}
+
+function levelLabel(text) {
+  const wrap = document.createElement("div");
+  wrap.style.cssText = "position:relative;width:0;height:0;pointer-events:none";
+  const label = document.createElement("div");
+  label.textContent = text;
+  label.style.cssText = "position:absolute;left:6px;top:-10px;font:600 11px/1.2 Georgia,serif;color:#1c1915;background:rgba(246,241,232,.94);border:1px solid #1c1915;border-radius:999px;padding:2px 6px;white-space:nowrap";
+  wrap.append(label);
+  return wrap;
+}
+
+function drawFrame(center, radiusKm, labeled) {
+  const rings = 5;
+  for (let level = 1; level <= rings; level += 1) {
+    const km = (radiusKm * level) / rings;
+    if (window.AMap.Circle) {
+      addOverlay(new window.AMap.Circle({
+        center: center,
+        radius: km * 1000,
+        strokeColor: "#1c1915",
+        strokeOpacity: level === rings ? 0.95 : 0.55,
+        strokeWeight: level === rings ? 2 : 1,
+        strokeStyle: level === rings ? "solid" : "dashed",
+        fillOpacity: 0,
+        zIndex: 8 + level,
+      }));
+    }
+    if (labeled) {
+      const kmText = km >= 10 ? String(Math.round(km)) : km.toFixed(1);
+      addOverlay(new window.AMap.Marker({
+        position: shiftKm(center, km * 0.7, km * 0.7),
+        zIndex: 80,
+        content: levelLabel("Level " + level + " · " + kmText + " km"),
+      }));
+    }
+  }
+  addOverlay(new window.AMap.Polyline({
+    path: [shiftKm(center, -radiusKm, 0), shiftKm(center, radiusKm, 0)],
+    strokeColor: "#b8432f",
+    strokeWeight: 2,
+    strokeOpacity: 0.85,
+    zIndex: 12,
+  }));
+  addOverlay(new window.AMap.Polyline({
+    path: [shiftKm(center, 0, -radiusKm), shiftKm(center, 0, radiusKm)],
+    strokeColor: "#b8432f",
+    strokeWeight: 2,
+    strokeOpacity: 0.85,
+    zIndex: 12,
+  }));
+  if (labeled) {
+    addOverlay(new window.AMap.Marker({ position: shiftKm(center, radiusKm, 0), zIndex: 81, content: levelLabel("x") }));
+    addOverlay(new window.AMap.Marker({ position: shiftKm(center, 0, radiusKm), zIndex: 81, content: levelLabel("y") }));
+  }
+}
+
 function drawMeeting(list, selectedId, group, legs) {
   const labeled = state.labels !== false;
   clearOverlays();
   showPeople(group, false, labeled);
-  const center = groupFrame(group).center;
-  addOverlay(new window.AMap.Marker({ position: center, title: "Center", zIndex: 110, content: centerPin(labeled) }));
+  const frame = groupFrame(group);
+  drawFrame(frame.center, frame.radiusKm, labeled);
   list.forEach((option) => {
     addOverlay(new window.AMap.Marker({
       position: option.court.position,
@@ -425,6 +485,7 @@ function drawMeeting(list, selectedId, group, legs) {
       lineJoin: "round",
     }));
   });
+  addOverlay(new window.AMap.Marker({ position: frame.center, title: "Center", zIndex: 300, content: centerPin(labeled) }));
   fit();
 }
 
