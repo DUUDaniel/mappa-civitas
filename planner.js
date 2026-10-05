@@ -168,65 +168,67 @@ const CITY_ALIASES = [
   ["香港", ["香港", "hong kong", "hongkong"]],
 ];
 
-function cityHint(query, home) {
-  const text = query.toLowerCase();
+function mentionedCity(query) {
+  const text = query.trim().toLowerCase();
   for (const pair of CITY_ALIASES) {
-    if (pair[1].some((name) => text.includes(name))) return pair[0];
+    if (pair[1].some((name) => standalone(text, name))) return pair[0];
   }
+  return "";
+}
+
+function standalone(text, name) {
+  if (/[a-z]/i.test(name)) {
+    const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    return new RegExp("(?:^|[^a-z])" + escaped + "(?:$|[^a-z])", "i").test(text);
+  }
+  if (text.includes(name + "市")) return true;
+  return text.split(/[\s,，]+/).some((part) => part === name);
+}
+
+function homeCity(home) {
   const trimmed = String(home || "").replace(/市$/, "").trim();
-  if (!trimmed || /省|自治区|全国/.test(home || "")) return "全国";
+  if (!trimmed || /省|自治区|全国/.test(home || "")) return "";
   return trimmed;
 }
 
-function chooseTip(tips, query) {
-  const ready = tips.filter((tip) => tip && tip.name && tip.location && tip.location.lng != null);
-  if (!ready.length) return null;
-  const wanted = query.trim().toLowerCase().replace(/\s+/g, "");
-  return ready
-    .map((tip, index) => {
-      const name = String(tip.name).toLowerCase().replace(/\s+/g, "");
-      let score = 30 - index;
-      if (name === wanted) score += 40;
-      else if (name.includes(wanted) || wanted.includes(name)) score += 12;
-      const plain = String(tip.name).replace(/\(地铁站\)|\(公交站\)/g, "");
-      if (plain !== tip.name && ready.some((other) => other.name === plain)) score -= 10;
-      return { tip: tip, score: score };
-    })
-    .sort((a, b) => b.score - a.score)[0].tip;
+function solidTip(tips) {
+  const ready = tips.filter((tip) => tip && tip.name && tip.location && tip.location.lng != null && !/停车场|公厕|出入口/.test(tip.name));
+  return ready.find((tip) => !/地铁站|公交站/.test(tip.name)) || ready[0] || null;
+}
+
+function askTips(keyword, city, limit) {
+  return new Promise((resolve) => {
+    if (!window.AMap.AutoComplete) {
+      resolve([]);
+      return;
+    }
+    const timer = window.setTimeout(() => resolve([]), 8000);
+    new window.AMap.AutoComplete({ city: city || "全国", citylimit: limit }).search(keyword, (status, result) => {
+      window.clearTimeout(timer);
+      resolve(status === "complete" && result.tips ? result.tips : []);
+    });
+  });
 }
 
 function geocode(address, home) {
-  return ensurePlugins().then(() => new Promise((resolve) => {
-    const hint = cityHint(address, home);
-    const finish = (position, label) => resolve(position ? { position: position, label: label } : null);
-    const fromAddress = (text) => new Promise((done) => {
-      const geocoder = new window.AMap.Geocoder(hint === "全国" ? {} : { city: hint });
-      geocoder.getLocation(text, (status, result) => {
+  return ensurePlugins().then(async () => {
+    const hint = mentionedCity(address) || homeCity(home);
+    let tips = hint ? await askTips(address, hint, true) : [];
+    if (!solidTip(tips)) tips = await askTips(address, "全国", false);
+    const tip = solidTip(tips);
+    if (tip) return { position: [tip.location.lng, tip.location.lat], label: [tip.name, tip.district].filter(Boolean).join(", ") };
+    const named = tips.find((item) => item && item.name && item.district);
+    const fallback = named ? named.district + named.name : address;
+    const position = await new Promise((done) => {
+      const geocoder = new window.AMap.Geocoder(hint ? { city: hint } : {});
+      geocoder.getLocation(fallback, (status, result) => {
         const rows = status === "complete" && result.geocodes ? result.geocodes : [];
         const useful = rows.filter((item) => item.location && !/村庄|乡镇/.test(item.level || ""));
         done(useful[0] && useful[0].location ? [useful[0].location.lng, useful[0].location.lat] : null);
       });
     });
-    if (!window.AMap.AutoComplete) {
-      fromAddress(address).then((position) => finish(position, address));
-      return;
-    }
-    const box = new window.AMap.AutoComplete({ city: hint, citylimit: false });
-    const timer = window.setTimeout(() => finish(null, ""), 8000);
-    box.search(address, (status, result) => {
-      window.clearTimeout(timer);
-      const tips = status === "complete" && result.tips ? result.tips : [];
-      const tip = chooseTip(tips, address);
-      if (tip) {
-        finish([tip.location.lng, tip.location.lat], [tip.name, tip.district].filter(Boolean).join(", "));
-        return;
-      }
-      const named = tips.find((item) => item && item.name && item.district);
-      fromAddress(named ? named.district + named.name : address).then((position) => {
-        finish(position, named ? [named.name, named.district].filter(Boolean).join(", ") : address);
-      });
-    });
-  }));
+    return position ? { position: position, label: named ? [named.name, named.district].filter(Boolean).join(", ") : address } : null;
+  });
 }
 
 function nearbyCity(center) {
@@ -429,7 +431,7 @@ function render() {
   nameInput.placeholder = "Partner name";
   nameInput.required = true;
   const placeInput = el("input");
-  placeInput.placeholder = "Place, in Chinese or English, e.g. 国贸 or Guomao";
+  placeInput.placeholder = "Place and city, e.g. 鸟巢 北京 or Guomao, Beijing";
   placeInput.required = true;
   const submit = el("button", "ghost", state.adding ? "Finding that place…" : "Add partner");
   submit.type = "submit";
