@@ -1,16 +1,30 @@
 /** DOM id the Amap JS API must own. */
 const AMAP_MOUNT_ID = "amap-mount";
 
+function personPin(color, name) {
+  const wrap = document.createElement("div");
+  wrap.style.cssText = "position:relative;width:0;height:0;pointer-events:none";
+  const dot = document.createElement("div");
+  dot.style.cssText = "position:absolute;left:-11px;top:-11px;width:22px;height:22px;border-radius:999px;background:" + color + ";border:3px solid #fff;box-shadow:0 1px 4px rgba(28,25,21,.45)";
+  const label = document.createElement("div");
+  label.textContent = name;
+  label.style.cssText = "position:absolute;left:16px;top:-9px;font:600 12px/1.2 Georgia,serif;color:#1c1915;background:#f6f1e8;border:1px solid #d8cfc2;border-radius:999px;padding:3px 8px;white-space:nowrap";
+  wrap.append(dot, label);
+  return wrap;
+}
+
 function placeUser(map, position) {
   const point = Array.isArray(position) ? position : [position.lng, position.lat];
   window.__mappaPoint = point;
   map.setZoom(15);
   map.setCenter(point);
+  const pin = personPin("#b8432f", "You");
   if (window.__mappaMarker) {
     window.__mappaMarker.setPosition(point);
+    if (window.__mappaMarker.setContent) window.__mappaMarker.setContent(pin);
     return;
   }
-  window.__mappaMarker = new window.AMap.Marker({ position: point, title: "You" });
+  window.__mappaMarker = new window.AMap.Marker({ position: point, title: "You", zIndex: 120, content: pin });
   map.add(window.__mappaMarker);
 }
 
