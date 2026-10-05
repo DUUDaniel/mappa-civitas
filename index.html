@@ -105,8 +105,9 @@
       .option.active { border-color: var(--cinnabar); background: var(--plate); }
       .option .card { border: 0; background: transparent; }
       .detail { display: grid; gap: 12px; padding: 0 12px 12px; }
-      .modes { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; }
-      .mode { height: 40px; border-radius: 999px; border: 1px solid var(--line); background: transparent; font-size: 12px; }
+      .modes { display: flex; flex-wrap: wrap; gap: 4px; }
+      .mode { height: 40px; border-radius: 999px; border: 1px solid var(--line); background: transparent; font-size: 12px; padding: 0 12px; }
+      .ghost { height: 44px; border: 1px solid var(--line); border-radius: 12px; background: var(--paper); color: var(--ink); }
       .mode.on { background: var(--cinnabar); color: var(--cinnabar-ink); border-color: var(--cinnabar); }
       .leg { margin: 0; display: flex; justify-content: space-between; gap: 12px; padding-left: 8px; font-size: 14px; }
       .filters { display: flex; gap: 8px; overflow-x: auto; padding: 12px 16px; border-bottom: 1px solid var(--line); }
