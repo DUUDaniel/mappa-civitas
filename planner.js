@@ -48,15 +48,38 @@ function km(a, b) {
   return 6371 * 2 * Math.asin(Math.min(1, Math.sqrt(h)));
 }
 
+function stepsEl() {
+  const list = el("ol", "steps");
+  [
+    "Tap My location and allow the prompt.",
+    "Choose a sport.",
+    "Add each partner and where they start. A full place works best, such as Guomao, Beijing.",
+    "Tap Find courts by car. Courts are ordered by total driving time.",
+    "Open a court. Car routes show first. Then try Light rail, Public, Walk, or Cycle.",
+  ].forEach((text, index) => {
+    const item = el("li");
+    const num = el("span", "num", String(index + 1));
+    item.append(num, el("span", "", text));
+    list.append(item);
+  });
+  return list;
+}
+
 function people() {
   return state.you ? [state.you, ...state.partners] : state.partners;
+}
+
+function formatMinutes(minutes) {
+  if (minutes < 90) return minutes + " min";
+  return Math.round(minutes / 60) + " h";
 }
 
 function describeCourt(court, count, totalMinutes) {
   const kind = (court.type || "sports court").split(";").pop().trim() || "sports court";
   const where = court.address || court.city || "the area around the group";
   const group = count === 1 ? "1 person" : count + " people";
-  return court.name + " is a " + kind + " at " + where + ". By car, about " + totalMinutes + " minutes in total for " + group + ".";
+  const time = totalMinutes < 90 ? totalMinutes + " minutes" : Math.round(totalMinutes / 60) + " hours";
+  return court.name + " is a " + kind + " at " + where + ". By car, about " + time + " in total for " + group + ".";
 }
 
 function ensurePlugins() {
@@ -169,7 +192,7 @@ function oneLeg(mode, origin, destination, city) {
   return new Promise((resolve) => {
     const start = new window.AMap.LngLat(origin[0], origin[1]);
     const end = new window.AMap.LngLat(destination[0], destination[1]);
-    const timer = window.setTimeout(() => resolve(null), 8000);
+    const timer = window.setTimeout(() => resolve(null), 15000);
     const done = (status, result, read) => {
       window.clearTimeout(timer);
       if (status !== "complete") {
@@ -276,7 +299,8 @@ function render() {
   if (!state.sport) {
     const wrap = el("div", "pad");
     wrap.append(el("h2", "", "Sports"));
-    wrap.append(el("p", "lead", "Pick a sport, then add where each partner starts."));
+    wrap.append(el("p", "lead", "Follow these steps. Amap finds courts best in mainland China."));
+    wrap.append(stepsEl());
     const grid = el("div", "sports");
     SPORTS.forEach((sport) => {
       const button = el("button", "sport", sport.label);
@@ -300,6 +324,7 @@ function render() {
   });
   head.append(back, el("h2", "", state.sport.label));
   wrap.append(head);
+  wrap.append(stepsEl());
 
   const partners = el("section", "stack");
   partners.append(el("h3", "", "Starting places"));
@@ -367,7 +392,7 @@ function render() {
       button.type = "button";
       const row = el("span", "row");
       row.append(el("span", "", index + 1 + ". " + option.court.name));
-      row.append(el("span", "meta", option.totalMinutes + " min"));
+      row.append(el("span", "meta", formatMinutes(option.totalMinutes)));
       button.append(row);
       button.addEventListener("click", () => choose(option.court.id, "drive"));
       box.append(button);
@@ -387,7 +412,7 @@ function render() {
           const line = el("p", "leg");
           line.style.borderLeft = "8px solid " + leg.color;
           line.append(el("span", "", leg.name));
-          line.append(el("span", "meta", leg.minutes == null ? "Unavailable" : leg.minutes + " min · " + leg.km.toFixed(1) + " km"));
+          line.append(el("span", "meta", leg.minutes == null ? "Unavailable" : (leg.estimated ? "About " : "") + formatMinutes(leg.minutes) + " · " + leg.km.toFixed(1) + " km"));
           detail.append(line);
         });
         box.append(detail);
@@ -416,7 +441,9 @@ async function openSport(sport) {
   if (!ok || !point) {
     state.loading = false;
     state.you = null;
-    state.note = "Allow location for this site, then choose the sport again.";
+    state.note = window.AMap && window.__mappaMap
+      ? "Allow location for this site, then choose the sport again."
+      : "Wait until the map finishes opening, then choose the sport again.";
     render();
     return;
   }
@@ -468,38 +495,54 @@ async function findCourts() {
   render();
   try {
     const group = people();
-    const center = [
-      group.reduce((sum, person) => sum + person.position[0], 0) / group.length,
-      group.reduce((sum, person) => sum + person.position[1], 0) / group.length,
-    ];
-    const farthest = Math.max.apply(null, group.map((person) => km(person.position, center)));
-    const radius = Math.min(30000, Math.max(8000, Math.round(farthest * 1600)));
-    let courts = await searchCourts(state.sport.keyword, center, radius);
-    if (courts.length < 4) {
-      const extra = await searchCourts(state.sport.fallback, center, Math.min(30000, radius * 2));
-      const seen = {};
-      courts.forEach((court) => { seen[court.id] = true; });
-      courts = courts.concat(extra.filter((court) => !seen[court.id]));
+    const seen = {};
+    const courts = [];
+    for (const person of group) {
+      let found = await searchCourts(state.sport.keyword, person.position, 15000);
+      if (found.length < 2) {
+        const extra = await searchCourts(state.sport.fallback, person.position, 25000);
+        const ids = {};
+        found.forEach((court) => { ids[court.id] = true; });
+        found = found.concat(extra.filter((court) => !ids[court.id]));
+      }
+      found
+        .map((court) => ({ court: court, away: km(person.position, court.position) }))
+        .sort((a, b) => a.away - b.away)
+        .slice(0, 3)
+        .forEach((item) => {
+          if (seen[item.court.id]) return;
+          seen[item.court.id] = true;
+          courts.push(item.court);
+        });
     }
-    courts = courts.slice(0, 6);
+    const shortlist = courts.slice(0, 6);
     const scored = [];
-    for (const court of courts) {
-      const drive = await legsFor({ court: court }, group, "drive");
-      if (drive.some((leg) => leg.minutes == null)) continue;
+    for (const court of shortlist) {
+      const drive = (await legsFor({ court: court }, group, "drive")).map((leg, index) => {
+        if (leg.minutes != null) return leg;
+        const distance = km(group[index].position, court.position);
+        return {
+          name: leg.name,
+          color: leg.color,
+          minutes: Math.max(1, Math.round((distance / 35) * 60)),
+          km: distance,
+          path: [],
+          estimated: true,
+        };
+      });
       const totalMinutes = drive.reduce((sum, leg) => sum + leg.minutes, 0);
-      const kind = (court.type || "sports court").split(";").pop().trim() || "sports court";
+      const estimated = drive.some((leg) => leg.estimated);
       scored.push({
         court: court,
         totalMinutes: totalMinutes,
-        description: describeCourt(court, group.length, totalMinutes),
+        description: describeCourt(court, group.length, totalMinutes) + (estimated ? " Amap did not return every driving route, so a missing time is estimated from distance." : ""),
         drive: drive,
       });
-      void kind;
     }
     scored.sort((a, b) => a.totalMinutes - b.totalMinutes);
     state.ranked = scored.slice(0, 3);
     if (!state.ranked.length) {
-      state.note = "No court could be timed by car for this group. Amap covers mainland China best.";
+      state.note = "Amap found no courts near these starting places. Use a place in mainland China, such as Chaoyang, Beijing.";
     } else {
       const first = state.ranked[0];
       state.picked = first.court.id;
