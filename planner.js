@@ -191,9 +191,15 @@ function homeCity(home) {
   return trimmed;
 }
 
-function solidTip(tips) {
+function solidTip(tips, query) {
   const ready = tips.filter((tip) => tip && tip.name && tip.location && tip.location.lng != null && !/停车场|公厕|出入口/.test(tip.name));
-  return ready.find((tip) => !/地铁站|公交站/.test(tip.name)) || ready[0] || null;
+  const skipStay = !/酒店|招待所|宾馆/.test(query || "");
+  const places = ready.filter((tip) => {
+    if (/地铁站|公交站/.test(tip.name)) return false;
+    if (skipStay && /招待所|酒店|宾馆/.test(tip.name)) return false;
+    return true;
+  });
+  return places[0] || ready[0] || null;
 }
 
 function askTips(keyword, city, limit) {
@@ -214,8 +220,8 @@ function geocode(address, home) {
   return ensurePlugins().then(async () => {
     const hint = mentionedCity(address) || homeCity(home);
     let tips = hint ? await askTips(address, hint, true) : [];
-    if (!solidTip(tips)) tips = await askTips(address, "全国", false);
-    const tip = solidTip(tips);
+    if (!solidTip(tips, address)) tips = await askTips(address, "全国", false);
+    const tip = solidTip(tips, address);
     if (tip) return { position: [tip.location.lng, tip.location.lat], label: [tip.name, tip.district].filter(Boolean).join(", ") };
     const named = tips.find((item) => item && item.name && item.district);
     const fallback = named ? named.district + named.name : address;
