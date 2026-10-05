@@ -10,8 +10,9 @@ const SPORTS = [
 ];
 
 const MODES = [
-  { id: "drive", label: "Drive" },
-  { id: "transit", label: "Transit" },
+  { id: "drive", label: "Car" },
+  { id: "rail", label: "Light rail" },
+  { id: "transit", label: "Public" },
   { id: "walk", label: "Walk" },
   { id: "cycle", label: "Cycle" },
 ];
@@ -31,7 +32,9 @@ const state = {
   legs: {},
   routing: false,
   adding: false,
+  scoring: false,
   city: "",
+  ranked: [],
 };
 
 let overlays = [];
@@ -49,31 +52,11 @@ function people() {
   return state.you ? [state.you, ...state.partners] : state.partners;
 }
 
-function rank(courts, group) {
-  const seen = new Set();
-  return courts
-    .filter((court) => {
-      if (seen.has(court.id)) return false;
-      seen.add(court.id);
-      return true;
-    })
-    .map((court) => {
-      const totalKm = group.reduce((sum, person) => sum + km(person.position, court.position), 0);
-      const kind = (court.type || "sports court").split(";").pop().trim() || "sports court";
-      const where = court.address || court.city || "the area around the group";
-      const count = group.length === 1 ? "1 person" : group.length + " people";
-      return {
-        court,
-        totalKm,
-        description: court.name + " is a " + kind + " at " + where + ". The straight-line total is about " + totalKm.toFixed(1) + " km for " + count + ".",
-      };
-    })
-    .sort((a, b) => a.totalKm - b.totalKm)
-    .slice(0, 3);
-}
-
-function options() {
-  return state.partners.length ? rank(state.courts, people()) : [];
+function describeCourt(court, count, totalMinutes) {
+  const kind = (court.type || "sports court").split(";").pop().trim() || "sports court";
+  const where = court.address || court.city || "the area around the group";
+  const group = count === 1 ? "1 person" : count + " people";
+  return court.name + " is a " + kind + " at " + where + ". By car, about " + totalMinutes + " minutes in total for " + group + ".";
 }
 
 function ensurePlugins() {
@@ -219,17 +202,33 @@ function oneLeg(mode, origin, destination, city) {
       }));
       return;
     }
-    new window.AMap.Transfer({ city: city || "全国" }).search(start, end, (status, result) => done(status, result, (value) => {
-      const plan = value.plans && value.plans[0];
-      if (!plan) return null;
-      const path = [];
-      (plan.segments || []).forEach((segment) => {
-        if (segment.transit && segment.transit.path) path.push(...segment.transit.path);
-        ((segment.walking && segment.walking.steps) || []).forEach((step) => path.push(...(step.path || [])));
-      });
-      return { minutes: Math.max(1, Math.round((plan.time || 0) / 60)), km: (plan.distance || 0) / 1000, path };
-    }));
+    const policy = mode === "transit" ? 5 : 0;
+    new window.AMap.Transfer({ city: city || "全国", policy: policy }).search(start, end, (status, result) => {
+      const plans = status === "complete" && result.plans ? result.plans : [];
+      const rail = plans.filter((plan) => /地铁|轻轨|磁悬|有轨|轨道/.test(JSON.stringify(plan.segments || [])));
+      const plan = mode === "rail" ? rail.sort((a, b) => (a.time || 0) - (b.time || 0))[0] : plans[0];
+      if (!plan && mode === "transit") {
+        new window.AMap.Transfer({ city: city || "全国" }).search(start, end, (nextStatus, nextResult) => {
+          const next = nextStatus === "complete" && nextResult.plans ? nextResult.plans[0] : null;
+          window.clearTimeout(timer);
+          resolve(next ? readPlan(next) : null);
+        });
+        return;
+      }
+      window.clearTimeout(timer);
+      resolve(plan ? readPlan(plan) : null);
+    });
   });
+}
+
+function readPlan(plan) {
+  const path = [];
+  (plan.segments || []).forEach((segment) => {
+    if (segment.transit && segment.transit.path) path.push(...segment.transit.path);
+    ((segment.walking && segment.walking.steps) || []).forEach((step) => path.push(...(step.path || [])));
+  });
+  if (!plan.time && !plan.distance) return null;
+  return { minutes: Math.max(1, Math.round((plan.time || 0) / 60)), km: (plan.distance || 0) / 1000, path: path };
 }
 
 function drawMeeting(list, selectedId, group, legs) {
@@ -277,7 +276,7 @@ function render() {
   if (!state.sport) {
     const wrap = el("div", "pad");
     wrap.append(el("h2", "", "Sports"));
-    wrap.append(el("p", "lead", "Pick one to see courts around you."));
+    wrap.append(el("p", "lead", "Pick a sport, then add where each partner starts."));
     const grid = el("div", "sports");
     SPORTS.forEach((sport) => {
       const button = el("button", "sport", sport.label);
@@ -302,33 +301,19 @@ function render() {
   head.append(back, el("h2", "", state.sport.label));
   wrap.append(head);
 
-  const courts = el("section", "stack");
-  courts.append(el("h3", "", "Courts near you"));
-  if (state.loading) courts.append(el("p", "lead", "Looking around you…"));
-  if (!state.loading && !state.courts.length) courts.append(el("p", "empty", state.note || "No courts yet."));
-  state.courts.forEach((court) => {
-    const button = el("button", "card" + (court.id === state.activeCourt ? " active" : ""));
-    button.type = "button";
-    const row = el("span", "row");
-    row.append(el("span", "", court.name));
-    if (state.you) row.append(el("span", "meta", km(state.you.position, court.position).toFixed(1) + " km"));
-    button.append(row);
-    if (court.address) button.append(el("span", "meta", court.address));
-    button.addEventListener("click", () => {
-      state.activeCourt = court.id;
-      state.picked = null;
-      showCourts(state.courts, court.id);
-      render();
-    });
-    courts.append(button);
-  });
-  const active = state.courts.find((court) => court.id === state.activeCourt);
-  if (active && active.address) courts.append(el("p", "lead", active.name + ". " + active.address + "."));
-  wrap.append(courts);
-
-  const partners = el("section", "stack split");
-  partners.append(el("h3", "", "Partners"));
-  partners.append(el("p", "lead", "Add who is coming, and the place each person leaves from."));
+  const partners = el("section", "stack");
+  partners.append(el("h3", "", "Starting places"));
+  partners.append(el("p", "lead", "Add each partner and where they leave from. The court is chosen after that, by car time."));
+  if (state.you) {
+    const you = el("div", "partner");
+    const copy = el("div");
+    const name = el("p", "who", "You");
+    name.style.borderLeft = "8px solid #b8432f";
+    name.style.paddingLeft = "8px";
+    copy.append(name, el("p", "meta", state.city || "Your location"));
+    you.append(copy);
+    partners.append(you);
+  } else partners.append(el("p", "lead", state.loading ? "Finding you…" : state.note || "Location is needed."));
   state.partners.forEach((partner, index) => {
     const row = el("div", "partner");
     const copy = el("div");
@@ -340,10 +325,9 @@ function render() {
     remove.type = "button";
     remove.addEventListener("click", () => {
       state.partners = state.partners.filter((item) => item.id !== partner.id);
+      state.ranked = [];
       state.picked = null;
       state.legs = {};
-      if (state.partners.length) showCourts(options().map((option) => option.court));
-      else showCourts(state.courts, state.activeCourt);
       render();
     });
     row.append(copy, remove);
@@ -351,38 +335,41 @@ function render() {
   });
   const form = el("form", "partner-form");
   const nameInput = el("input");
-  nameInput.placeholder = "Name";
+  nameInput.placeholder = "Partner name";
   nameInput.required = true;
   const placeInput = el("input");
   placeInput.placeholder = "Where they start, e.g. Guomao, Beijing";
   placeInput.required = true;
-  const submit = el("button", "submit", state.adding ? "Finding that place…" : "Add partner");
+  const submit = el("button", "ghost", state.adding ? "Finding that place…" : "Add partner");
   submit.type = "submit";
-  submit.disabled = state.adding || state.loading;
+  submit.disabled = state.adding || state.loading || !state.you;
   form.append(nameInput, placeInput, submit);
   form.addEventListener("submit", (event) => {
     event.preventDefault();
     addPartner(nameInput.value.trim(), placeInput.value.trim());
   });
   partners.append(form);
-  if (state.note && state.courts.length) partners.append(el("p", "warn", state.note));
+  const find = el("button", "submit", state.scoring ? "Timing the drive…" : "Find courts by car");
+  find.type = "button";
+  find.disabled = !state.partners.length || state.scoring || !state.you;
+  find.addEventListener("click", () => findCourts());
+  partners.append(find);
+  if (state.note) partners.append(el("p", "warn", state.note));
   wrap.append(partners);
 
-  if (state.partners.length) {
+  if (state.ranked.length) {
     const meetings = el("section", "stack split");
-    meetings.append(el("h3", "", "Shortest meetings"));
-    meetings.append(el("p", "lead", "Three places with the smallest total distance. Open one for routes."));
-    const list = options();
-    if (!list.length) meetings.append(el("p", "lead", "No meeting place to compare yet."));
-    list.forEach((option, index) => {
+    meetings.append(el("h3", "", "Best by car"));
+    meetings.append(el("p", "lead", "Ranked by total driving time. Open one for light rail, public transit, walking, or cycling."));
+    state.ranked.forEach((option, index) => {
       const box = el("div", "option" + (option.court.id === state.picked ? " active" : ""));
       const button = el("button", "card");
       button.type = "button";
       const row = el("span", "row");
       row.append(el("span", "", index + 1 + ". " + option.court.name));
-      row.append(el("span", "meta", option.totalKm.toFixed(1) + " km"));
+      row.append(el("span", "meta", option.totalMinutes + " min"));
       button.append(row);
-      button.addEventListener("click", () => choose(option.court.id, state.mode));
+      button.addEventListener("click", () => choose(option.court.id, "drive"));
       box.append(button);
       if (option.court.id === state.picked) {
         const detail = el("div", "detail");
@@ -435,18 +422,8 @@ async function openSport(sport) {
   }
   state.you = { id: "you", name: "You", place: "Your location", position: point };
   state.city = await nearbyCity(point);
-  try {
-    let found = await searchCourts(sport.keyword, point);
-    if (!found.length) found = await searchCourts(sport.fallback, point, 20000);
-    state.courts = found;
-    showCourts(found);
-    state.note = found.length ? "" : "No courts turned up nearby. Amap covers mainland China best.";
-  } catch (error) {
-    state.note = "The map is still opening. Choose the sport again in a moment.";
-  } finally {
-    state.loading = false;
-    render();
-  }
+  state.loading = false;
+  render();
 }
 
 async function addPartner(name, place) {
@@ -462,32 +439,14 @@ async function addPartner(name, place) {
     return;
   }
   state.partners = state.partners.concat([{ id: String(Date.now()), name, place, position }]);
+  state.ranked = [];
   state.picked = null;
   state.legs = {};
-  const list = options();
-  if (list.length) showCourts(list.map((option) => option.court));
   render();
 }
 
-async function choose(id, mode) {
-  const list = options();
-  const option = list.find((item) => item.court.id === id);
-  if (!option) return;
-  const same = state.picked === id;
-  state.picked = id;
-  state.mode = mode;
-  state.activeCourt = null;
-  if (!same) state.legs = {};
-  const existing = state.legs[mode];
-  if (existing) {
-    drawMeeting(list, id, people(), existing);
-    render();
-    return;
-  }
-  state.routing = true;
-  render();
-  const group = people();
-  const legs = await Promise.all(group.map(async (person, index) => {
+async function legsFor(option, group, mode) {
+  return Promise.all(group.map(async (person, index) => {
     const found = await oneLeg(mode, person.position, option.court.position, option.court.city);
     return {
       name: person.name,
@@ -497,9 +456,86 @@ async function choose(id, mode) {
       path: found ? found.path : [],
     };
   }));
+}
+
+async function findCourts() {
+  if (!state.sport || !state.you || !state.partners.length) return;
+  state.scoring = true;
+  state.note = "";
+  state.ranked = [];
+  state.picked = null;
+  state.legs = {};
+  render();
+  try {
+    const group = people();
+    const center = [
+      group.reduce((sum, person) => sum + person.position[0], 0) / group.length,
+      group.reduce((sum, person) => sum + person.position[1], 0) / group.length,
+    ];
+    const farthest = Math.max.apply(null, group.map((person) => km(person.position, center)));
+    const radius = Math.min(30000, Math.max(8000, Math.round(farthest * 1600)));
+    let courts = await searchCourts(state.sport.keyword, center, radius);
+    if (courts.length < 4) {
+      const extra = await searchCourts(state.sport.fallback, center, Math.min(30000, radius * 2));
+      const seen = {};
+      courts.forEach((court) => { seen[court.id] = true; });
+      courts = courts.concat(extra.filter((court) => !seen[court.id]));
+    }
+    courts = courts.slice(0, 6);
+    const scored = [];
+    for (const court of courts) {
+      const drive = await legsFor({ court: court }, group, "drive");
+      if (drive.some((leg) => leg.minutes == null)) continue;
+      const totalMinutes = drive.reduce((sum, leg) => sum + leg.minutes, 0);
+      const kind = (court.type || "sports court").split(";").pop().trim() || "sports court";
+      scored.push({
+        court: court,
+        totalMinutes: totalMinutes,
+        description: describeCourt(court, group.length, totalMinutes),
+        drive: drive,
+      });
+      void kind;
+    }
+    scored.sort((a, b) => a.totalMinutes - b.totalMinutes);
+    state.ranked = scored.slice(0, 3);
+    if (!state.ranked.length) {
+      state.note = "No court could be timed by car for this group. Amap covers mainland China best.";
+    } else {
+      const first = state.ranked[0];
+      state.picked = first.court.id;
+      state.mode = "drive";
+      state.legs = { drive: first.drive };
+      drawMeeting(state.ranked, first.court.id, group, first.drive);
+    }
+  } catch (error) {
+    state.note = "The map is still opening. Try again in a moment.";
+  } finally {
+    state.scoring = false;
+    render();
+  }
+}
+
+async function choose(id, mode) {
+  const option = state.ranked.find((item) => item.court.id === id);
+  if (!option) return;
+  const same = state.picked === id;
+  state.picked = id;
+  state.mode = mode;
+  if (!same) state.legs = { drive: option.drive };
+  const existing = mode === "drive" ? option.drive : state.legs[mode];
+  if (existing) {
+    state.legs = { ...state.legs, [mode]: existing };
+    drawMeeting(state.ranked, id, people(), existing);
+    render();
+    return;
+  }
+  state.routing = true;
+  render();
+  const group = people();
+  const legs = await legsFor(option, group, mode);
   state.legs = { ...state.legs, [mode]: legs };
   state.routing = false;
-  drawMeeting(list, id, group, legs);
+  drawMeeting(state.ranked, id, group, legs);
   render();
 }
 
