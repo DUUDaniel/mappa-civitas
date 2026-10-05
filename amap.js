@@ -12,62 +12,27 @@ function placeUser(map, position) {
   map.add(window.__mappaMarker);
 }
 
-function locateWithBrowser(map) {
-  if (!navigator.geolocation) return Promise.resolve(false);
+function locateUser() {
+  const map = window.__mappaMap;
+  const AMap = window.AMap;
+  if (!map || !AMap || !navigator.geolocation) return Promise.resolve(false);
   return new Promise((resolve) => {
     navigator.geolocation.getCurrentPosition(
       (position) => {
         const gps = [position.coords.longitude, position.coords.latitude];
-        const finish = (point) => {
-          placeUser(map, point);
-          resolve(true);
-        };
-        if (typeof window.AMap.convertFrom === "function") {
-          window.AMap.convertFrom(gps, "gps", (status, result) => {
-            finish(status === "complete" && result.locations && result.locations[0] ? result.locations[0] : gps);
+        placeUser(map, gps);
+        if (typeof AMap.convertFrom === "function") {
+          AMap.convertFrom(gps, "gps", (status, result) => {
+            if (status === "complete" && result.locations && result.locations[0]) {
+              placeUser(map, result.locations[0]);
+            }
           });
-          return;
         }
-        finish(gps);
+        resolve(true);
       },
       () => resolve(false),
-      { enableHighAccuracy: true, timeout: 10000, maximumAge: 30000 },
+      { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 },
     );
-  });
-}
-
-function locateUser() {
-  const map = window.__mappaMap;
-  const AMap = window.AMap;
-  if (!map || !AMap) return Promise.resolve(false);
-  if (typeof AMap.plugin !== "function") return locateWithBrowser(map);
-  return new Promise((resolve) => {
-    AMap.plugin("AMap.Geolocation", () => {
-      if (!AMap.Geolocation) {
-        locateWithBrowser(map).then(resolve);
-        return;
-      }
-      if (!window.__mappaGeo) {
-        window.__mappaGeo = new AMap.Geolocation({
-          enableHighAccuracy: true,
-          timeout: 10000,
-          zoomToAccuracy: true,
-          showButton: false,
-          showMarker: true,
-          showCircle: true,
-        });
-        map.addControl(window.__mappaGeo);
-      }
-      window.__mappaGeo.getCurrentPosition((status, result) => {
-        if (status === "complete" && result.position) {
-          map.setZoom(15);
-          map.setCenter(result.position);
-          resolve(true);
-          return;
-        }
-        locateWithBrowser(map).then(resolve);
-      });
-    });
   });
 }
 
@@ -94,7 +59,6 @@ function loadAmap(config) {
     });
     const mount = document.getElementById(AMAP_MOUNT_ID);
     if (mount) mount.setAttribute("data-loaded", "true");
-    locateUser();
   };
   if (window.AMap) {
     paint();
