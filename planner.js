@@ -33,11 +33,13 @@ const state = {
   routing: false,
   adding: false,
   scoring: false,
+  moving: false,
   city: "",
   ranked: [],
 };
 
 let overlays = [];
+let peopleOverlays = [];
 let pluginsReady = null;
 
 function km(a, b) {
@@ -51,7 +53,7 @@ function km(a, b) {
 function stepsEl() {
   const list = el("ol", "steps");
   [
-    "Tap My location and allow the prompt.",
+    "Tap My location, or type your location if the pin is wrong.",
     "Choose a sport.",
     "Add each partner and where they start. A full place works best, such as Guomao, Beijing.",
     "Tap Find courts by car. Courts are ordered by total driving time.",
@@ -114,10 +116,34 @@ function addOverlay(overlay) {
 }
 
 function fit() {
-  const view = [window.__mappaMarker, ...overlays].filter(Boolean);
+  const view = [window.__mappaMarker, ...peopleOverlays, ...overlays].filter(Boolean);
   if (view.length && window.__mappaMap && window.__mappaMap.setFitView) {
     window.__mappaMap.setFitView(view, false, [56, 56, 56, 56]);
   }
+}
+
+function showPeople(group, fitView) {
+  peopleOverlays.forEach((item) => item.setMap && item.setMap(null));
+  peopleOverlays = [];
+  if (!window.AMap || !window.__mappaMap) return;
+  (group || []).forEach((person, index) => {
+    const pin = personPin(COLORS[index % COLORS.length], person.name);
+    if (person.name === "You") {
+      window.__mappaPoint = person.position;
+      if (window.__mappaMarker) {
+        window.__mappaMarker.setPosition(person.position);
+        if (window.__mappaMarker.setContent) window.__mappaMarker.setContent(pin);
+        return;
+      }
+      window.__mappaMarker = new window.AMap.Marker({ position: person.position, title: "You", zIndex: 120, content: pin });
+      window.__mappaMap.add(window.__mappaMarker);
+      return;
+    }
+    const marker = new window.AMap.Marker({ position: person.position, title: person.name, zIndex: 120, content: pin });
+    window.__mappaMap.add(marker);
+    peopleOverlays.push(marker);
+  });
+  if (fitView !== false) fit();
 }
 
 function showCourts(courts, activeId) {
@@ -138,39 +164,67 @@ function showCourts(courts, activeId) {
   fit();
 }
 
+function dedupe(courts) {
+  const seen = {};
+  return courts.filter((court) => {
+    if (seen[court.id]) return false;
+    seen[court.id] = true;
+    return true;
+  });
+}
+
+function readPoi(keyword, poi, index) {
+  const address = poi.address || "";
+  const city = poi.cityname || "";
+  const district = poi.adname || "";
+  const full = address && city && address.includes(city) ? address : [city, district, address].filter(Boolean).join("");
+  return {
+    id: poi.id || keyword + index + (poi.location ? poi.location.lng : ""),
+    name: poi.name,
+    address: full,
+    type: poi.type || "",
+    city: city,
+    tel: poi.tel || "",
+    position: [poi.location.lng, poi.location.lat],
+  };
+}
+
 function searchCourts(keyword, center, radius) {
   return ensurePlugins().then(async () => {
     const page = (pageIndex) => new Promise((resolve) => {
-      const search = new window.AMap.PlaceSearch({ pageSize: 25, pageIndex: pageIndex, extensions: "all" });
+      const search = new window.AMap.PlaceSearch({ pageSize: 50, pageIndex: pageIndex, extensions: "all" });
       const timer = window.setTimeout(() => resolve([]), 8000);
       search.searchNearBy(keyword, center, Math.min(radius || 50000, 50000), (status, result) => {
         window.clearTimeout(timer);
         const pois = status === "complete" && result.poiList ? result.poiList.pois || [] : [];
-        resolve(pois.filter((poi) => poi.location && poi.name).map((poi, index) => {
-          const address = poi.address || "";
-          const city = poi.cityname || "";
-          const district = poi.adname || "";
-          const full = address && city && address.includes(city) ? address : [city, district, address].filter(Boolean).join("");
-          return {
-            id: poi.id || keyword + pageIndex + index,
-            name: poi.name,
-            address: full,
-            type: poi.type || "",
-            city: city,
-            tel: poi.tel || "",
-            position: [poi.location.lng, poi.location.lat],
-          };
-        }));
+        resolve(pois.filter((poi) => poi.location && poi.name).map((poi, index) => readPoi(keyword, poi, pageIndex + "-" + index)));
       });
     });
     const first = await page(1);
-    const second = first.length >= 20 ? await page(2) : [];
-    const seen = {};
-    return first.concat(second).filter((court) => {
-      if (seen[court.id]) return false;
-      seen[court.id] = true;
-      return true;
+    const second = first.length >= 40 ? await page(2) : [];
+    return dedupe(first.concat(second));
+  });
+}
+
+function searchInCity(keyword, city) {
+  return ensurePlugins().then(async () => {
+    if (!city) return [];
+    const page = (pageIndex) => new Promise((resolve) => {
+      const search = new window.AMap.PlaceSearch({ pageSize: 50, pageIndex: pageIndex, extensions: "all", city: city, citylimit: true });
+      const timer = window.setTimeout(() => resolve([]), 8000);
+      search.search(keyword, (status, result) => {
+        window.clearTimeout(timer);
+        const pois = status === "complete" && result.poiList ? result.poiList.pois || [] : [];
+        resolve(pois.filter((poi) => poi.location && poi.name).map((poi, index) => readPoi(keyword, poi, "c" + pageIndex + index)));
+      });
     });
+    const pages = [];
+    for (let index = 1; index <= 3; index += 1) {
+      const rows = await page(index);
+      pages.push(rows);
+      if (rows.length < 40) break;
+    }
+    return dedupe(pages.flat());
   });
 }
 
@@ -349,26 +403,12 @@ function readPlan(plan) {
 
 function drawMeeting(list, selectedId, group, legs) {
   clearOverlays();
+  showPeople(group, false);
   list.forEach((option) => {
     addOverlay(new window.AMap.Marker({
       position: option.court.position,
       title: option.court.name,
       label: option.court.id === selectedId ? { content: option.court.name, direction: "top" } : undefined,
-    }));
-  });
-  group.forEach((person, index) => {
-    const color = COLORS[index % COLORS.length];
-    const pin = personPin(color, person.name);
-    if (person.name === "You" && window.__mappaMarker) {
-      window.__mappaMarker.setPosition(person.position);
-      if (window.__mappaMarker.setContent) window.__mappaMarker.setContent(pin);
-      return;
-    }
-    addOverlay(new window.AMap.Marker({
-      position: person.position,
-      title: person.name,
-      zIndex: 120,
-      content: pin,
     }));
   });
   (legs || []).forEach((leg) => {
@@ -396,6 +436,7 @@ function render() {
   if (!rail) return;
   rail.replaceChildren();
   if (!state.sport) {
+    showPeople([]);
     const wrap = el("div", "pad");
     wrap.append(el("h2", "", "Sports"));
     wrap.append(el("p", "lead", "Follow these steps. Amap finds courts best in mainland China."));
@@ -434,10 +475,23 @@ function render() {
     const name = el("p", "who", "You");
     name.style.borderLeft = "8px solid #b8432f";
     name.style.paddingLeft = "8px";
-    copy.append(name, el("p", "meta", state.city || "Your location"));
+    copy.append(name, el("p", "meta", state.you.matched || state.city || "Your location"));
     you.append(copy);
     partners.append(you);
-  } else partners.append(el("p", "lead", state.loading ? "Finding you…" : state.note || "Location is needed."));
+  } else partners.append(el("p", "lead", state.loading ? "Finding you…" : "Type your location if the map cannot find you."));
+  const selfForm = el("form", "partner-form");
+  const selfInput = el("input");
+  selfInput.placeholder = "Your location, if the pin is wrong";
+  selfInput.required = true;
+  const selfButton = el("button", "ghost", state.moving ? "Moving your pin…" : "Use this location");
+  selfButton.type = "submit";
+  selfButton.disabled = state.moving;
+  selfForm.append(selfInput, selfButton);
+  selfForm.addEventListener("submit", (event) => {
+    event.preventDefault();
+    useMyPlace(selfInput.value.trim());
+  });
+  partners.append(selfForm);
   state.partners.forEach((partner, index) => {
     const row = el("div", "partner");
     const copy = el("div");
@@ -484,7 +538,7 @@ function render() {
   if (state.ranked.length) {
     const meetings = el("section", "stack split");
     meetings.append(el("h3", "", "Best by car"));
-    meetings.append(el("p", "lead", "Five courts within 50 km, ranked by total driving time. Open one for the address and other ways to get there."));
+    meetings.append(el("p", "lead", "Courts across the whole city, near and farther out, ranked by total driving time. Open one for the address and other ways to get there."));
     state.ranked.forEach((option, index) => {
       const box = el("div", "option" + (option.court.id === state.picked ? " active" : ""));
       const button = el("button", "card");
@@ -524,6 +578,7 @@ function render() {
   }
 
   rail.append(wrap);
+  if (!state.ranked.length) showPeople(people());
 }
 
 async function openSport(sport) {
@@ -542,15 +597,33 @@ async function openSport(sport) {
   if (!ok || !point) {
     state.loading = false;
     state.you = null;
-    state.note = window.AMap && window.__mappaMap
-      ? "Allow location for this site, then choose the sport again."
-      : "Wait until the map finishes opening, then choose the sport again.";
+    state.note = "Automatic location was blocked. Type your location below.";
     render();
     return;
   }
   state.you = { id: "you", name: "You", place: "Your location", position: point };
   state.city = await nearbyCity(point);
   state.loading = false;
+  render();
+}
+
+async function useMyPlace(place) {
+  if (!place) return;
+  state.moving = true;
+  state.note = "";
+  render();
+  const found = await geocode(place, state.city);
+  state.moving = false;
+  if (!found) {
+    state.note = "That place was not found. Add the city, for example Chaoyang, Beijing.";
+    render();
+    return;
+  }
+  state.you = { id: "you", name: "You", place: place, matched: found.label, position: found.position };
+  state.city = await nearbyCity(found.position);
+  state.ranked = [];
+  state.picked = null;
+  state.legs = {};
   render();
 }
 
@@ -596,31 +669,31 @@ async function findCourts() {
   render();
   try {
     const group = people();
-    const seen = {};
-    const courts = [];
-    for (const person of group) {
-      let found = await searchCourts(state.sport.keyword, person.position, 50000);
-      if (found.length < 8) {
-        const extra = await searchCourts(state.sport.fallback, person.position, 50000);
-        const ids = {};
-        found.forEach((court) => { ids[court.id] = true; });
-        found = found.concat(extra.filter((court) => !ids[court.id]));
-      }
-      found
-        .map((court) => ({ court: court, away: km(person.position, court.position) }))
-        .sort((a, b) => a.away - b.away)
-        .slice(0, 6)
-        .forEach((item) => {
-          if (seen[item.court.id]) return;
-          seen[item.court.id] = true;
-          courts.push(item.court);
-        });
+    const cities = [];
+    const home = homeCity(state.city);
+    if (home) cities.push(home);
+    group.forEach((person) => {
+      const named = mentionedCity((person.place || "") + " " + (person.matched || ""));
+      if (named && cities.indexOf(named) < 0) cities.push(named);
+    });
+    async function gather(keyword) {
+      const batches = await Promise.all(cities.map((city) => searchInCity(keyword, city)).concat(group.map((person) => searchCourts(keyword, person.position, 50000))));
+      return dedupe(batches.flat());
     }
-    const shortlist = courts
+    let found = await gather(state.sport.keyword);
+    if (found.length < 12) found = dedupe(found.concat(await gather(state.sport.fallback)));
+    const rankedByDistance = found
       .map((court) => ({ court: court, away: Math.min.apply(null, group.map((person) => km(person.position, court.position))) }))
-      .sort((a, b) => a.away - b.away)
-      .slice(0, 8)
-      .map((item) => item.court);
+      .sort((a, b) => a.away - b.away);
+    let shortlist = rankedByDistance.map((item) => item.court);
+    if (rankedByDistance.length > 12) {
+      const near = rankedByDistance.slice(0, 6);
+      const rest = rankedByDistance.slice(6);
+      const step = Math.max(1, Math.floor(rest.length / 6));
+      const far = [];
+      for (let index = 0; index < rest.length && far.length < 6; index += step) far.push(rest[index]);
+      shortlist = near.concat(far).map((item) => item.court);
+    }
     const scored = [];
     for (const court of shortlist) {
       const drive = (await legsFor({ court: court }, group, "drive")).map((leg, index) => {
@@ -645,7 +718,7 @@ async function findCourts() {
       });
     }
     scored.sort((a, b) => a.totalMinutes - b.totalMinutes);
-    state.ranked = scored.slice(0, 5);
+    state.ranked = scored;
     if (!state.ranked.length) {
       state.note = "Amap found no courts near these starting places. Use a place in mainland China, such as Chaoyang, Beijing.";
     } else {
