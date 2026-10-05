@@ -77,9 +77,15 @@ function formatMinutes(minutes) {
 function describeCourt(court, count, totalMinutes) {
   const kind = (court.type || "sports court").split(";").pop().trim() || "sports court";
   const where = court.address || court.city || "the area around the group";
+  const phone = court.tel ? " Phone " + court.tel + "." : "";
   const group = count === 1 ? "1 person" : count + " people";
   const time = totalMinutes < 90 ? totalMinutes + " minutes" : Math.round(totalMinutes / 60) + " hours";
-  return court.name + " is a " + kind + " at " + where + ". By car, about " + time + " in total for " + group + ".";
+  return court.name + " is a " + kind + " at " + where + "." + phone + " By car, about " + time + " in total for " + group + ".";
+}
+
+function courtFacts(court) {
+  const kind = (court.type || "").split(";").pop().trim();
+  return [kind, court.address, court.tel].filter(Boolean).join(" · ");
 }
 
 function ensurePlugins() {
@@ -133,20 +139,39 @@ function showCourts(courts, activeId) {
 }
 
 function searchCourts(keyword, center, radius) {
-  return ensurePlugins().then(() => new Promise((resolve) => {
-    const search = new window.AMap.PlaceSearch({ pageSize: 8, pageIndex: 1 });
-    search.searchNearBy(keyword, center, radius || 12000, (status, result) => {
-      const pois = status === "complete" && result.poiList ? result.poiList.pois || [] : [];
-      resolve(pois.filter((poi) => poi.location && poi.name).map((poi, index) => ({
-        id: poi.id || keyword + index,
-        name: poi.name,
-        address: poi.address || "",
-        type: poi.type || "",
-        city: poi.cityname || "",
-        position: [poi.location.lng, poi.location.lat],
-      })));
+  return ensurePlugins().then(async () => {
+    const page = (pageIndex) => new Promise((resolve) => {
+      const search = new window.AMap.PlaceSearch({ pageSize: 25, pageIndex: pageIndex, extensions: "all" });
+      const timer = window.setTimeout(() => resolve([]), 8000);
+      search.searchNearBy(keyword, center, Math.min(radius || 50000, 50000), (status, result) => {
+        window.clearTimeout(timer);
+        const pois = status === "complete" && result.poiList ? result.poiList.pois || [] : [];
+        resolve(pois.filter((poi) => poi.location && poi.name).map((poi, index) => {
+          const address = poi.address || "";
+          const city = poi.cityname || "";
+          const district = poi.adname || "";
+          const full = address && city && address.includes(city) ? address : [city, district, address].filter(Boolean).join("");
+          return {
+            id: poi.id || keyword + pageIndex + index,
+            name: poi.name,
+            address: full,
+            type: poi.type || "",
+            city: city,
+            tel: poi.tel || "",
+            position: [poi.location.lng, poi.location.lat],
+          };
+        }));
+      });
     });
-  }));
+    const first = await page(1);
+    const second = first.length >= 20 ? await page(2) : [];
+    const seen = {};
+    return first.concat(second).filter((court) => {
+      if (seen[court.id]) return false;
+      seen[court.id] = true;
+      return true;
+    });
+  });
 }
 
 const CITY_ALIASES = [
@@ -459,7 +484,7 @@ function render() {
   if (state.ranked.length) {
     const meetings = el("section", "stack split");
     meetings.append(el("h3", "", "Best by car"));
-    meetings.append(el("p", "lead", "Ranked by total driving time. Open one for light rail, public transit, walking, or cycling."));
+    meetings.append(el("p", "lead", "Five courts within 50 km, ranked by total driving time. Open one for the address and other ways to get there."));
     state.ranked.forEach((option, index) => {
       const box = el("div", "option" + (option.court.id === state.picked ? " active" : ""));
       const button = el("button", "card");
@@ -468,6 +493,8 @@ function render() {
       row.append(el("span", "", index + 1 + ". " + option.court.name));
       row.append(el("span", "meta", formatMinutes(option.totalMinutes)));
       button.append(row);
+      const facts = courtFacts(option.court);
+      if (facts) button.append(el("span", "meta", facts));
       button.addEventListener("click", () => choose(option.court.id, "drive"));
       box.append(button);
       if (option.court.id === state.picked) {
@@ -572,9 +599,9 @@ async function findCourts() {
     const seen = {};
     const courts = [];
     for (const person of group) {
-      let found = await searchCourts(state.sport.keyword, person.position, 15000);
-      if (found.length < 2) {
-        const extra = await searchCourts(state.sport.fallback, person.position, 25000);
+      let found = await searchCourts(state.sport.keyword, person.position, 50000);
+      if (found.length < 8) {
+        const extra = await searchCourts(state.sport.fallback, person.position, 50000);
         const ids = {};
         found.forEach((court) => { ids[court.id] = true; });
         found = found.concat(extra.filter((court) => !ids[court.id]));
@@ -582,14 +609,18 @@ async function findCourts() {
       found
         .map((court) => ({ court: court, away: km(person.position, court.position) }))
         .sort((a, b) => a.away - b.away)
-        .slice(0, 3)
+        .slice(0, 6)
         .forEach((item) => {
           if (seen[item.court.id]) return;
           seen[item.court.id] = true;
           courts.push(item.court);
         });
     }
-    const shortlist = courts.slice(0, 6);
+    const shortlist = courts
+      .map((court) => ({ court: court, away: Math.min.apply(null, group.map((person) => km(person.position, court.position))) }))
+      .sort((a, b) => a.away - b.away)
+      .slice(0, 8)
+      .map((item) => item.court);
     const scored = [];
     for (const court of shortlist) {
       const drive = (await legsFor({ court: court }, group, "drive")).map((leg, index) => {
@@ -614,7 +645,7 @@ async function findCourts() {
       });
     }
     scored.sort((a, b) => a.totalMinutes - b.totalMinutes);
-    state.ranked = scored.slice(0, 3);
+    state.ranked = scored.slice(0, 5);
     if (!state.ranked.length) {
       state.note = "Amap found no courts near these starting places. Use a place in mainland China, such as Chaoyang, Beijing.";
     } else {
