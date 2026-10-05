@@ -2,13 +2,15 @@
 const AMAP_MOUNT_ID = "amap-mount";
 
 function placeUser(map, position) {
+  const point = Array.isArray(position) ? position : [position.lng, position.lat];
+  window.__mappaPoint = point;
   map.setZoom(15);
-  map.setCenter(position);
+  map.setCenter(point);
   if (window.__mappaMarker) {
-    window.__mappaMarker.setPosition(position);
+    window.__mappaMarker.setPosition(point);
     return;
   }
-  window.__mappaMarker = new window.AMap.Marker({ position: position, title: "You" });
+  window.__mappaMarker = new window.AMap.Marker({ position: point, title: "You" });
   map.add(window.__mappaMarker);
 }
 
@@ -20,15 +22,23 @@ function locateUser() {
     navigator.geolocation.getCurrentPosition(
       (position) => {
         const gps = [position.coords.longitude, position.coords.latitude];
-        placeUser(map, gps);
-        if (typeof AMap.convertFrom === "function") {
-          AMap.convertFrom(gps, "gps", (status, result) => {
-            if (status === "complete" && result.locations && result.locations[0]) {
-              placeUser(map, result.locations[0]);
-            }
-          });
+        if (typeof AMap.convertFrom !== "function") {
+          placeUser(map, gps);
+          resolve(true);
+          return;
         }
-        resolve(true);
+        let settled = false;
+        const finish = (point) => {
+          if (settled) return;
+          settled = true;
+          placeUser(map, point);
+          resolve(true);
+        };
+        const timer = window.setTimeout(() => finish(gps), 4000);
+        AMap.convertFrom(gps, "gps", (status, result) => {
+          window.clearTimeout(timer);
+          finish(status === "complete" && result.locations && result.locations[0] ? result.locations[0] : gps);
+        });
       },
       () => resolve(false),
       { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 },
