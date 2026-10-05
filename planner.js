@@ -36,6 +36,7 @@ const state = {
   moving: false,
   city: "",
   ranked: [],
+  labels: true,
 };
 
 let overlays = [];
@@ -122,12 +123,12 @@ function fit() {
   }
 }
 
-function showPeople(group, fitView) {
+function showPeople(group, fitView, labeled) {
   peopleOverlays.forEach((item) => item.setMap && item.setMap(null));
   peopleOverlays = [];
   if (!window.AMap || !window.__mappaMap) return;
   (group || []).forEach((person, index) => {
-    const pin = personPin(COLORS[index % COLORS.length], person.name);
+    const pin = personPin(COLORS[index % COLORS.length], person.name, labeled !== false);
     if (person.name === "You") {
       window.__mappaPoint = person.position;
       if (window.__mappaMarker) {
@@ -402,13 +403,16 @@ function readPlan(plan) {
 }
 
 function drawMeeting(list, selectedId, group, legs) {
+  const labeled = state.labels !== false;
   clearOverlays();
-  showPeople(group, false);
+  showPeople(group, false, labeled);
+  const center = groupFrame(group).center;
+  addOverlay(new window.AMap.Marker({ position: center, title: "Center", zIndex: 110, content: centerPin(labeled) }));
   list.forEach((option) => {
     addOverlay(new window.AMap.Marker({
       position: option.court.position,
       title: option.court.name,
-      label: option.court.id === selectedId ? { content: option.court.name, direction: "top" } : undefined,
+      label: labeled && option.court.id === selectedId ? { content: option.court.name, direction: "top" } : undefined,
     }));
   });
   (legs || []).forEach((leg) => {
@@ -539,6 +543,14 @@ function render() {
     const meetings = el("section", "stack split");
     meetings.append(el("h3", "", "Best by car"));
     meetings.append(el("p", "lead", "Up to 20 courts. More near the middle of the group, fewer toward the edge. The edge is 1.2 times the farthest person from that middle."));
+    const toggle = el("button", "ghost", state.labels ? "Hide the labels" : "Show the labels");
+    toggle.type = "button";
+    toggle.addEventListener("click", () => {
+      state.labels = !state.labels;
+      drawMeeting(state.ranked, state.picked, people(), state.legs[state.mode] || []);
+      render();
+    });
+    meetings.append(toggle);
     state.ranked.forEach((option, index) => {
       const box = el("div", "option" + (option.court.id === state.picked ? " active" : ""));
       const button = el("button", "card");
@@ -778,6 +790,7 @@ async function findCourts() {
       state.picked = first.court.id;
       state.mode = "drive";
       state.legs = { drive: first.drive };
+      state.labels = true;
       drawMeeting(state.ranked, first.court.id, group, first.drive);
     }
   } catch (error) {
