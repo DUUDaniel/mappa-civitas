@@ -90,7 +90,7 @@ function ensurePlugins() {
         reject(new Error("map"));
         return;
       }
-      window.AMap.plugin(["AMap.PlaceSearch", "AMap.Geocoder", "AMap.Driving", "AMap.Walking", "AMap.Riding", "AMap.Transfer"], () => resolve());
+      window.AMap.plugin(["AMap.PlaceSearch", "AMap.AutoComplete", "AMap.Geocoder", "AMap.Driving", "AMap.Walking", "AMap.Riding", "AMap.Transfer"], () => resolve());
     });
   }
   return pluginsReady;
@@ -149,22 +149,82 @@ function searchCourts(keyword, center, radius) {
   }));
 }
 
-function geocode(address, city) {
+const CITY_ALIASES = [
+  ["北京", ["北京", "beijing", "peking"]],
+  ["上海", ["上海", "shanghai"]],
+  ["广州", ["广州", "guangzhou"]],
+  ["深圳", ["深圳", "shenzhen"]],
+  ["成都", ["成都", "chengdu"]],
+  ["杭州", ["杭州", "hangzhou"]],
+  ["南京", ["南京", "nanjing"]],
+  ["武汉", ["武汉", "wuhan"]],
+  ["西安", ["西安", "xian", "xi'an"]],
+  ["重庆", ["重庆", "chongqing"]],
+  ["天津", ["天津", "tianjin"]],
+  ["苏州", ["苏州", "suzhou"]],
+  ["厦门", ["厦门", "xiamen"]],
+  ["青岛", ["青岛", "qingdao"]],
+  ["长沙", ["长沙", "changsha"]],
+  ["香港", ["香港", "hong kong", "hongkong"]],
+];
+
+function cityHint(query, home) {
+  const text = query.toLowerCase();
+  for (const pair of CITY_ALIASES) {
+    if (pair[1].some((name) => text.includes(name))) return pair[0];
+  }
+  const trimmed = String(home || "").replace(/市$/, "").trim();
+  if (!trimmed || /省|自治区|全国/.test(home || "")) return "全国";
+  return trimmed;
+}
+
+function chooseTip(tips, query) {
+  const ready = tips.filter((tip) => tip && tip.name && tip.location && tip.location.lng != null);
+  if (!ready.length) return null;
+  const wanted = query.trim().toLowerCase().replace(/\s+/g, "");
+  return ready
+    .map((tip, index) => {
+      const name = String(tip.name).toLowerCase().replace(/\s+/g, "");
+      let score = 30 - index;
+      if (name === wanted) score += 40;
+      else if (name.includes(wanted) || wanted.includes(name)) score += 12;
+      const plain = String(tip.name).replace(/\(地铁站\)|\(公交站\)/g, "");
+      if (plain !== tip.name && ready.some((other) => other.name === plain)) score -= 10;
+      return { tip: tip, score: score };
+    })
+    .sort((a, b) => b.score - a.score)[0].tip;
+}
+
+function geocode(address, home) {
   return ensurePlugins().then(() => new Promise((resolve) => {
-    const run = (scope) => new Promise((done) => {
-      const geocoder = new window.AMap.Geocoder(scope ? { city: scope } : {});
-      geocoder.getLocation(address, (status, result) => {
-        const location = status === "complete" && result.geocodes && result.geocodes[0] ? result.geocodes[0].location : null;
-        done(location ? [location.lng, location.lat] : null);
+    const hint = cityHint(address, home);
+    const finish = (position, label) => resolve(position ? { position: position, label: label } : null);
+    const fromAddress = (text) => new Promise((done) => {
+      const geocoder = new window.AMap.Geocoder(hint === "全国" ? {} : { city: hint });
+      geocoder.getLocation(text, (status, result) => {
+        const rows = status === "complete" && result.geocodes ? result.geocodes : [];
+        const useful = rows.filter((item) => item.location && !/村庄|乡镇/.test(item.level || ""));
+        done(useful[0] && useful[0].location ? [useful[0].location.lng, useful[0].location.lat] : null);
       });
     });
-    if (!city) {
-      run("全国").then(resolve);
+    if (!window.AMap.AutoComplete) {
+      fromAddress(address).then((position) => finish(position, address));
       return;
     }
-    run(city).then((local) => {
-      if (local) resolve(local);
-      else run("全国").then(resolve);
+    const box = new window.AMap.AutoComplete({ city: hint, citylimit: false });
+    const timer = window.setTimeout(() => finish(null, ""), 8000);
+    box.search(address, (status, result) => {
+      window.clearTimeout(timer);
+      const tips = status === "complete" && result.tips ? result.tips : [];
+      const tip = chooseTip(tips, address);
+      if (tip) {
+        finish([tip.location.lng, tip.location.lat], [tip.name, tip.district].filter(Boolean).join(", "));
+        return;
+      }
+      const named = tips.find((item) => item && item.name && item.district);
+      fromAddress(named ? named.district + named.name : address).then((position) => {
+        finish(position, named ? [named.name, named.district].filter(Boolean).join(", ") : address);
+      });
     });
   }));
 }
@@ -351,7 +411,7 @@ function render() {
     const name = el("p", "who", partner.name);
     name.style.borderLeft = "8px solid " + COLORS[(index + 1) % COLORS.length];
     name.style.paddingLeft = "8px";
-    copy.append(name, el("p", "meta", partner.place));
+    copy.append(name, el("p", "meta", partner.matched || partner.place));
     const remove = el("button", "remove", "Remove");
     remove.type = "button";
     remove.addEventListener("click", () => {
@@ -369,7 +429,7 @@ function render() {
   nameInput.placeholder = "Partner name";
   nameInput.required = true;
   const placeInput = el("input");
-  placeInput.placeholder = "Where they start, e.g. Guomao, Beijing";
+  placeInput.placeholder = "Place, in Chinese or English, e.g. 国贸 or Guomao";
   placeInput.required = true;
   const submit = el("button", "ghost", state.adding ? "Finding that place…" : "Add partner");
   submit.type = "submit";
@@ -464,14 +524,14 @@ async function addPartner(name, place) {
   state.adding = true;
   state.note = "";
   render();
-  const position = await geocode(place, state.city);
+  const found = await geocode(place, state.city);
   state.adding = false;
-  if (!position) {
-    state.note = "That place was not found. Try a fuller address.";
+  if (!found) {
+    state.note = "That place was not found. Add the city, for example Guomao, Beijing.";
     render();
     return;
   }
-  state.partners = state.partners.concat([{ id: String(Date.now()), name, place, position }]);
+  state.partners = state.partners.concat([{ id: String(Date.now()), name, place, matched: found.label, position: found.position }]);
   state.ranked = [];
   state.picked = null;
   state.legs = {};
