@@ -106,7 +106,7 @@ function render() {
       row.appendChild(place);
       if (item.mine) {
         const yours = document.createElement("span");
-        yours.className = "yours");
+        yours.className = "yours";
         yours.textContent = "Yours";
         row.appendChild(yours);
       }
