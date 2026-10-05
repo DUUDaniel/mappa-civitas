@@ -1,15 +1,31 @@
 /** DOM id the Amap JS API must own. */
 const AMAP_MOUNT_ID = "amap-mount";
 
-function personPin(color, name) {
+function personPin(color, name, labeled) {
   const wrap = document.createElement("div");
   wrap.style.cssText = "position:relative;width:0;height:0;pointer-events:none";
   const dot = document.createElement("div");
   dot.style.cssText = "position:absolute;left:-11px;top:-11px;width:22px;height:22px;border-radius:999px;background:" + color + ";border:3px solid #fff;box-shadow:0 1px 4px rgba(28,25,21,.45)";
+  wrap.append(dot);
+  if (labeled === false) return wrap;
   const label = document.createElement("div");
   label.textContent = name;
   label.style.cssText = "position:absolute;left:16px;top:-9px;font:600 12px/1.2 Georgia,serif;color:#1c1915;background:#f6f1e8;border:1px solid #d8cfc2;border-radius:999px;padding:3px 8px;white-space:nowrap";
-  wrap.append(dot, label);
+  wrap.append(label);
+  return wrap;
+}
+
+function centerPin(labeled) {
+  const wrap = document.createElement("div");
+  wrap.style.cssText = "position:relative;width:0;height:0;pointer-events:none";
+  const mark = document.createElement("div");
+  mark.style.cssText = "position:absolute;left:-7px;top:-7px;width:14px;height:14px;background:#1c1915;border:3px solid #fff;transform:rotate(45deg);box-shadow:0 1px 4px rgba(28,25,21,.45)";
+  wrap.append(mark);
+  if (!labeled) return wrap;
+  const label = document.createElement("div");
+  label.textContent = "Center";
+  label.style.cssText = "position:absolute;left:14px;top:-10px;font:600 12px/1.2 Georgia,serif;color:#1c1915;background:#f6f1e8;border:1px solid #1c1915;border-radius:999px;padding:3px 8px;white-space:nowrap";
+  wrap.append(label);
   return wrap;
 }
 
