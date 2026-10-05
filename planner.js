@@ -538,7 +538,7 @@ function render() {
   if (state.ranked.length) {
     const meetings = el("section", "stack split");
     meetings.append(el("h3", "", "Best by car"));
-    meetings.append(el("p", "lead", "Courts across the whole city, near and farther out, ranked by total driving time. Open one for the address and other ways to get there."));
+    meetings.append(el("p", "lead", "Up to 20 courts. More near the middle of the group, fewer toward the edge. The edge is 1.2 times the farthest person from that middle."));
     state.ranked.forEach((option, index) => {
       const box = el("div", "option" + (option.court.id === state.picked ? " active" : ""));
       const button = el("button", "card");
@@ -659,6 +659,66 @@ async function legsFor(option, group, mode) {
   }));
 }
 
+function groupFrame(group) {
+  const lat0 = group.reduce((sum, person) => sum + person.position[1], 0) / group.length;
+  const scale = Math.cos((lat0 * Math.PI) / 180) * 111.32;
+  const xs = group.map((person) => person.position[0] * scale);
+  const ys = group.map((person) => person.position[1] * 111.32);
+  const x = xs.reduce((sum, value) => sum + value, 0) / group.length;
+  const y = ys.reduce((sum, value) => sum + value, 0) / group.length;
+  const center = [x / scale, y / 111.32];
+  const farthest = Math.max.apply(null, group.map((person) => km(center, person.position)));
+  return { center: center, radiusKm: farthest < 0.3 ? 3 : 1.2 * farthest };
+}
+
+function pickByDensity(items, radiusKm, limit) {
+  const inside = items.filter((item) => item.away <= radiusKm + 0.05);
+  if (inside.length <= limit) return inside.map((item) => item.court);
+  const rings = 5;
+  const edge = Math.max(radiusKm, 0.001);
+  const mass = (value) => (value * value) / 2 - (value * value * value) / (3 * edge);
+  const weights = [];
+  for (let index = 0; index < rings; index += 1) {
+    weights.push(Math.max(0, mass((radiusKm * (index + 1)) / rings) - mass((radiusKm * index) / rings)));
+  }
+  const total = weights.reduce((sum, value) => sum + value, 0) || 1;
+  const slots = weights.map((value) => Math.floor((value / total) * limit));
+  let spare = limit - slots.reduce((sum, value) => sum + value, 0);
+  weights
+    .map((value, index) => ({ index: index, extra: (value / total) * limit - slots[index] }))
+    .sort((a, b) => b.extra - a.extra || a.index - b.index)
+    .forEach((item) => {
+      if (spare <= 0) return;
+      slots[item.index] += 1;
+      spare -= 1;
+    });
+  const chosen = [];
+  const used = {};
+  slots.forEach((count, index) => {
+    const inner = (radiusKm * index) / rings;
+    const outer = (radiusKm * (index + 1)) / rings;
+    const bucket = inside
+      .filter((item) => item.away >= inner && item.away <= outer + (index === rings - 1 ? 0.05 : 0))
+      .sort((a, b) => a.angle - b.angle);
+    const take = Math.min(count, bucket.length);
+    const step = bucket.length / Math.max(take, 1);
+    for (let pick = 0; pick < take; pick += 1) {
+      const item = bucket[Math.min(bucket.length - 1, Math.floor(pick * step))];
+      if (!item || used[item.court.id]) continue;
+      used[item.court.id] = true;
+      chosen.push(item.court);
+    }
+  });
+  inside
+    .filter((item) => !used[item.court.id])
+    .sort((a, b) => a.away - b.away)
+    .forEach((item) => {
+      if (chosen.length >= limit) return;
+      chosen.push(item.court);
+    });
+  return chosen.slice(0, limit);
+}
+
 async function findCourts() {
   if (!state.sport || !state.you || !state.partners.length) return;
   state.scoring = true;
@@ -669,31 +729,23 @@ async function findCourts() {
   render();
   try {
     const group = people();
-    const cities = [];
-    const home = homeCity(state.city);
-    if (home) cities.push(home);
-    group.forEach((person) => {
-      const named = mentionedCity((person.place || "") + " " + (person.matched || ""));
-      if (named && cities.indexOf(named) < 0) cities.push(named);
-    });
+    const frame = groupFrame(group);
+    const radiusM = frame.radiusKm * 1000;
     async function gather(keyword) {
-      const batches = await Promise.all(cities.map((city) => searchInCity(keyword, city)).concat(group.map((person) => searchCourts(keyword, person.position, 50000))));
-      return dedupe(batches.flat());
+      let found = await searchCourts(keyword, frame.center, radiusM);
+      if (frame.radiusKm > 50) {
+        const extra = await Promise.all(group.map((person) => searchCourts(keyword, person.position, 50000)));
+        found = dedupe(found.concat(extra.flat()));
+      }
+      return found.filter((court) => km(frame.center, court.position) <= frame.radiusKm + 0.05);
     }
-    let found = await gather(state.sport.keyword);
-    if (found.length < 12) found = dedupe(found.concat(await gather(state.sport.fallback)));
-    const rankedByDistance = found
-      .map((court) => ({ court: court, away: Math.min.apply(null, group.map((person) => km(person.position, court.position))) }))
-      .sort((a, b) => a.away - b.away);
-    let shortlist = rankedByDistance.map((item) => item.court);
-    if (rankedByDistance.length > 12) {
-      const near = rankedByDistance.slice(0, 6);
-      const rest = rankedByDistance.slice(6);
-      const step = Math.max(1, Math.floor(rest.length / 6));
-      const far = [];
-      for (let index = 0; index < rest.length && far.length < 6; index += step) far.push(rest[index]);
-      shortlist = near.concat(far).map((item) => item.court);
-    }
+    let pool = await gather(state.sport.keyword);
+    if (pool.length < 20) pool = dedupe(pool.concat(await gather(state.sport.fallback)));
+    const shortlist = pickByDensity(pool.map((court) => ({
+      court: court,
+      away: km(frame.center, court.position),
+      angle: Math.atan2(court.position[0] - frame.center[0], court.position[1] - frame.center[1]),
+    })), frame.radiusKm, 20);
     const scored = [];
     for (const court of shortlist) {
       const drive = (await legsFor({ court: court }, group, "drive")).map((leg, index) => {
