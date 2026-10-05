@@ -19,7 +19,7 @@ function centerPin(labeled) {
   const wrap = document.createElement("div");
   wrap.style.cssText = "position:relative;width:0;height:0;pointer-events:none";
   const mark = document.createElement("div");
-  mark.style.cssText = "position:absolute;left:-7px;top:-7px;width:14px;height:14px;background:#1c1915;border:3px solid #fff;transform:rotate(45deg);box-shadow:0 1px 4px rgba(28,25,21,.45)";
+  mark.style.cssText = "position:absolute;left:-9px;top:-9px;width:18px;height:18px;background:#b8432f;border:3px solid #fff;transform:rotate(45deg);box-shadow:0 1px 4px rgba(28,25,21,.45)";
   wrap.append(mark);
   if (!labeled) return wrap;
   const label = document.createElement("div");
