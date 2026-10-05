@@ -104,6 +104,11 @@
       .submit {
         height: 44px; border: 0; border-radius: 12px; background: var(--cinnabar); color: var(--cinnabar-ink); font-weight: 500;
       }
+      .locate {
+        position: absolute; right: 16px; bottom: 16px; z-index: 20;
+        height: 44px; border: 0; border-radius: 999px; padding: 0 16px;
+        background: var(--cinnabar); color: var(--cinnabar-ink); font-weight: 500;
+      }
       @media (min-width: 1024px) {
         .body { flex-direction: row; }
         .map { min-height: 0; }
@@ -140,6 +145,7 @@
               <p>Mainland tiles load into this plate.</p>
             </div>
           </div>
+          <button type="button" class="locate" id="locate">My location</button>
         </section>
         <aside>
           <div class="filters" id="filters"></div>
@@ -163,6 +169,9 @@
     <script src="./amap.js"></script>
     <script src="./board.js"></script>
     <script>
+      document.getElementById("locate").addEventListener("click", function () {
+        locateUser();
+      });
       loadAmap({
         key: "556f12bb8c01cd9a3bdb6f0681ed9c2a",
         securityJsCode: "1189eb8e2f6fc2d45a5facd849cc15a2",
