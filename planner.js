@@ -37,11 +37,15 @@ const state = {
   city: "",
   ranked: [],
   labels: true,
+  transitLoading: false,
+  transitFor: "",
+  detailing: false,
 };
 
 let overlays = [];
 let peopleOverlays = [];
 let pluginsReady = null;
+const legJobs = {};
 
 function km(a, b) {
   const rad = (value) => (value * Math.PI) / 180;
@@ -58,7 +62,7 @@ function stepsEl() {
     "Choose a sport.",
     "Add each partner and where they start. A full place works best, such as Guomao, Beijing.",
     "Tap Find courts by car. Courts are ordered by total driving time.",
-    "Open a court. Car routes show first. Then try Light rail, Public, Walk, or Cycle.",
+    "Open a court for hours, rating, and phone. A short note explains the bus or metro for each person. Then try Light rail, Public, Walk, or Cycle.",
   ].forEach((text, index) => {
     const item = el("li");
     const num = el("span", "num", String(index + 1));
@@ -72,6 +76,32 @@ function people() {
   return state.you ? [state.you, ...state.partners] : state.partners;
 }
 
+function cleanMetric(value) {
+  if (value == null) return "";
+  const text = String(value).trim();
+  if (!text || text === "[]" || Number(text) === 0) return "";
+  return text.replace(/\.00$/, "");
+}
+
+function textField() {
+  for (let index = 0; index < arguments.length; index += 1) {
+    const value = arguments[index];
+    if (typeof value === "string" && value.trim() && value.trim() !== "[]") return value.trim();
+  }
+  return "";
+}
+
+function photoUrls(poi) {
+  return (poi.photos || [])
+    .map((photo) => (photo && typeof photo.url === "string" ? photo.url : ""))
+    .filter((url) => /^https?:\/\//i.test(url))
+    .slice(0, 2);
+}
+
+function bizOf(poi) {
+  return poi.biz_ext || poi.bizExt || {};
+}
+
 function formatMinutes(minutes) {
   if (minutes < 90) return minutes + " min";
   return Math.round(minutes / 60) + " h";
@@ -79,16 +109,24 @@ function formatMinutes(minutes) {
 
 function describeCourt(court, count, totalMinutes) {
   const kind = (court.type || "sports court").split(";").pop().trim() || "sports court";
-  const where = court.address || court.city || "the area around the group";
-  const phone = court.tel ? " Phone " + court.tel + "." : "";
+  const place = [court.area, court.district, court.city].filter(Boolean).join(", ");
+  const where = place || court.address || "the area around the group";
   const group = count === 1 ? "1 person" : count + " people";
   const time = totalMinutes < 90 ? totalMinutes + " minutes" : Math.round(totalMinutes / 60) + " hours";
-  return court.name + " is a " + kind + " at " + where + "." + phone + " By car, about " + time + " in total for " + group + ".";
+  let text = court.name + " is a " + kind + " in " + where + ".";
+  if (court.hours) text += " Hours: " + court.hours + ".";
+  if (court.rating) text += " Rated " + court.rating + " out of 5.";
+  if (court.cost) text += " About ¥" + court.cost + ".";
+  if (court.tel) text += " Phone " + court.tel + ".";
+  text += " By car, about " + time + " in total for " + group + ".";
+  return text;
 }
 
 function courtFacts(court) {
   const kind = (court.type || "").split(";").pop().trim();
-  return [kind, court.address, court.tel].filter(Boolean).join(" · ");
+  return [kind, court.rating ? court.rating + " / 5" : "", court.hours, court.cost ? "about ¥" + court.cost : "", court.area, court.address, court.tel]
+    .filter(Boolean)
+    .join(" · ");
 }
 
 function ensurePlugins() {
@@ -186,8 +224,69 @@ function readPoi(keyword, poi, index) {
     type: poi.type || "",
     city: city,
     tel: poi.tel || "",
+    district: poi.adname || "",
+    area: textField(poi.business_area, poi.businessArea, bizOf(poi).business_area),
+    website: textField(poi.website),
+    hours: textField(bizOf(poi).open_time, bizOf(poi).opentime2, bizOf(poi).opentime),
+    rating: cleanMetric(bizOf(poi).rating),
+    cost: cleanMetric(bizOf(poi).cost),
+    photos: photoUrls(poi),
     position: [poi.location.lng, poi.location.lat],
   };
+}
+
+function realPoiId(id) {
+  return /^[A-Z0-9]{8,}$/.test(id || "");
+}
+
+function prefer(current, next) {
+  if (Array.isArray(current) || Array.isArray(next)) return (next && next.length ? next : current) || [];
+  return next || current || "";
+}
+
+function mergeDetail(court, poi) {
+  if (!poi || !poi.location) return court;
+  const extra = readPoi(court.name, poi, "detail");
+  return {
+    ...court,
+    address: prefer(court.address, extra.address),
+    type: prefer(court.type, extra.type),
+    city: prefer(court.city, extra.city),
+    tel: prefer(court.tel, extra.tel),
+    district: prefer(court.district, extra.district),
+    area: prefer(court.area, extra.area),
+    website: prefer(court.website, extra.website),
+    hours: prefer(court.hours, extra.hours),
+    rating: prefer(court.rating, extra.rating),
+    cost: prefer(court.cost, extra.cost),
+    photos: prefer(court.photos, extra.photos),
+  };
+}
+
+function poiDetails(id) {
+  return new Promise((resolve) => {
+    if (!realPoiId(id) || !window.AMap || !window.AMap.PlaceSearch) {
+      resolve(null);
+      return;
+    }
+    const timer = window.setTimeout(() => resolve(null), 7000);
+    new window.AMap.PlaceSearch({ extensions: "all" }).getDetails(id, (status, result) => {
+      window.clearTimeout(timer);
+      const list = result && result.poiList && result.poiList.pois;
+      const poi = status === "complete" ? (list && list[0]) || result.poi || null : null;
+      resolve(poi);
+    });
+  });
+}
+
+async function enrichCourts(courts) {
+  const out = [];
+  for (let index = 0; index < courts.length; index += 6) {
+    const slice = courts.slice(index, index + 6);
+    const details = await Promise.all(slice.map((court) => poiDetails(court.id)));
+    slice.forEach((court, offset) => out.push(mergeDetail(court, details[offset])));
+  }
+  return out;
 }
 
 function searchCourts(keyword, center, radius) {
@@ -392,14 +491,87 @@ function oneLeg(mode, origin, destination, city) {
   });
 }
 
+function metersText(meters) {
+  if (!meters) return "";
+  return meters >= 1000 ? (meters / 1000).toFixed(1) + " km" : Math.round(meters) + " m";
+}
+
+function listOf(value) {
+  if (!value) return [];
+  return Array.isArray(value) ? value : [value];
+}
+
+function walkPhrase(segment) {
+  const meters = segment.distance || 0;
+  if (meters < 60) return "";
+  const minutes = Math.max(1, Math.round((segment.time || 0) / 60));
+  return "Walk " + metersText(meters) + " (" + minutes + " min)";
+}
+
+function ridePhrase(segment) {
+  const transit = segment.transit || {};
+  const mode = segment.transit_mode || "";
+  const line = listOf(transit.lines)[0] || {};
+  const lineName = line.name || "";
+  const on = transit.on_station && transit.on_station.name;
+  const off = transit.off_station && transit.off_station.name;
+  const via = typeof transit.via_num === "number" ? transit.via_num : null;
+  const entrance = transit.entrance && transit.entrance.name;
+  const exit = transit.exit && transit.exit.name;
+  const vehicle = mode === "SUBWAY" || mode === "METRO_RAIL" ? "the metro" : mode === "RAILWAY" ? "the train" : mode === "BUS" ? "the bus" : "transit";
+  if (!lineName && !on && !off) return segment.instruction || "";
+  let sentence = lineName ? "Take " + lineName : "Take " + vehicle;
+  if (line.stime && line.etime) sentence += " (" + line.stime + "–" + line.etime + ")";
+  if (on) sentence += " from " + on;
+  if (entrance) sentence += ", " + entrance;
+  if (via === 0) sentence += ", to the next stop";
+  else if (via != null) sentence += ", passing " + via + " stop" + (via === 1 ? "" : "s");
+  if (off) sentence += ", and get off at " + off;
+  if (exit) sentence += ", " + exit;
+  return sentence;
+}
+
+function summarizePlan(plan) {
+  const segments = (plan && plan.segments) || [];
+  const parts = [];
+  segments.forEach((segment) => {
+    const mode = segment.transit_mode || "";
+    if (mode === "WALK") {
+      const phrase = walkPhrase(segment);
+      if (phrase) parts.push(phrase);
+      return;
+    }
+    if (mode === "TAXI") {
+      parts.push("Continue by taxi");
+      return;
+    }
+    const ride = ridePhrase(segment);
+    if (ride) parts.push(ride);
+  });
+  let text = parts.join(". ");
+  if (text && !/[.。]$/.test(text)) text += ".";
+  const extras = [];
+  if (plan && plan.cost) extras.push("Fare about ¥" + plan.cost);
+  if (plan && plan.walking_distance) extras.push("walking " + metersText(plan.walking_distance));
+  if (extras.length) text += (text ? " " : "") + extras.join(", ") + ".";
+  if (!text) text = segments.map((segment) => segment.instruction).filter(Boolean).join(" ");
+  return text;
+}
+
 function readPlan(plan) {
   const path = [];
   (plan.segments || []).forEach((segment) => {
-    if (segment.transit && segment.transit.path) path.push(...segment.transit.path);
-    ((segment.walking && segment.walking.steps) || []).forEach((step) => path.push(...(step.path || [])));
+    const transit = segment.transit || {};
+    if (transit.path) path.push(...transit.path);
+    ((transit.steps) || (segment.walking && segment.walking.steps) || []).forEach((step) => path.push(...(step.path || [])));
   });
   if (!plan.time && !plan.distance) return null;
-  return { minutes: Math.max(1, Math.round((plan.time || 0) / 60)), km: (plan.distance || 0) / 1000, path: path };
+  return {
+    minutes: Math.max(1, Math.round((plan.time || 0) / 60)),
+    km: (plan.distance || 0) / 1000,
+    path: path,
+    summary: summarizePlan(plan),
+  };
 }
 
 function shiftKm(center, eastKm, northKm) {
@@ -592,7 +764,8 @@ function render() {
     addPartner(nameInput.value.trim(), placeInput.value.trim());
   });
   partners.append(form);
-  const find = el("button", "submit", state.scoring ? "Timing the drive…" : "Find courts by car");
+  const findLabel = state.detailing ? "Reading each court…" : state.scoring ? "Timing the drive…" : "Find courts by car";
+  const find = el("button", "submit", findLabel);
   find.type = "button";
   find.disabled = !state.partners.length || state.scoring || !state.you;
   find.addEventListener("click", () => findCourts());
@@ -603,7 +776,7 @@ function render() {
   if (state.ranked.length) {
     const meetings = el("section", "stack split");
     meetings.append(el("h3", "", "Best by car"));
-    meetings.append(el("p", "lead", "Up to 24 courts. More near the middle of the group, fewer toward the edge. The edge is 2 times the farthest person from that middle."));
+    meetings.append(el("p", "lead", "Each court lists the type, hours, rating, and address when Amap has them. Open one for a public-transit description. More courts sit near the middle of the group."));
     const toggle = el("button", "ghost", state.labels ? "Hide the labels" : "Show the labels");
     toggle.type = "button";
     toggle.addEventListener("click", () => {
@@ -620,31 +793,10 @@ function render() {
       row.append(el("span", "", index + 1 + ". " + option.court.name));
       row.append(el("span", "meta", formatMinutes(option.totalMinutes)));
       button.append(row);
-      const facts = courtFacts(option.court);
-      if (facts) button.append(el("span", "meta", facts));
+      appendCourtLines(button, option.court);
       button.addEventListener("click", () => choose(option.court.id, "drive"));
       box.append(button);
-      if (option.court.id === state.picked) {
-        const detail = el("div", "detail");
-        detail.append(el("p", "lead", option.description));
-        const modes = el("div", "modes");
-        MODES.forEach((item) => {
-          const mode = el("button", "mode" + (state.mode === item.id ? " on" : ""), item.label);
-          mode.type = "button";
-          mode.addEventListener("click", () => choose(option.court.id, item.id));
-          modes.append(mode);
-        });
-        detail.append(modes);
-        if (state.routing) detail.append(el("p", "meta", "Drawing routes…"));
-        (state.legs[state.mode] || []).forEach((leg) => {
-          const line = el("p", "leg");
-          line.style.borderLeft = "8px solid " + leg.color;
-          line.append(el("span", "", leg.name));
-          line.append(el("span", "meta", leg.minutes == null ? "Unavailable" : (leg.estimated ? "About " : "") + formatMinutes(leg.minutes) + " · " + leg.km.toFixed(1) + " km"));
-          detail.append(line);
-        });
-        box.append(detail);
-      }
+      if (option.court.id === state.picked) box.append(courtDetail(option));
       meetings.append(box);
     });
     wrap.append(meetings);
@@ -652,6 +804,88 @@ function render() {
 
   rail.append(wrap);
   if (!state.ranked.length) showPeople(people());
+}
+
+function appendCourtLines(parent, court) {
+  const kind = (court.type || "").split(";").pop().trim();
+  const headline = [kind, court.rating ? "Rated " + court.rating + " / 5" : "", court.cost ? "about ¥" + court.cost : ""].filter(Boolean).join(" · ");
+  if (headline) parent.append(el("span", "meta", headline));
+  if (court.hours) parent.append(el("span", "meta", "Hours " + court.hours));
+  if (court.area) parent.append(el("span", "meta", court.area));
+  if (court.address) parent.append(el("span", "meta", court.address));
+  if (court.tel) parent.append(el("span", "meta", court.tel));
+}
+
+function appendLeg(parent, leg) {
+  const line = el("p", "leg");
+  line.style.borderLeft = "8px solid " + leg.color;
+  line.append(el("span", "", leg.name));
+  const timing = leg.minutes == null ? "Unavailable" : (leg.estimated ? "About " : "") + formatMinutes(leg.minutes) + (leg.km == null ? "" : " · " + leg.km.toFixed(1) + " km");
+  line.append(el("span", "meta", timing));
+  parent.append(line);
+  if (leg.summary) parent.append(el("p", "blurb", leg.summary));
+}
+
+function courtDetail(option) {
+  const court = option.court;
+  const detail = el("div", "detail");
+  if (court.photos && court.photos[0]) {
+    const img = document.createElement("img");
+    img.className = "shot";
+    img.alt = court.name;
+    img.referrerPolicy = "no-referrer";
+    img.src = court.photos[0];
+    img.addEventListener("error", () => img.remove());
+    detail.append(img);
+  }
+  detail.append(el("p", "lead", option.description));
+  if (court.website && /^https?:\/\//i.test(court.website)) {
+    const link = document.createElement("a");
+    link.className = "site";
+    link.href = court.website;
+    link.target = "_blank";
+    link.rel = "noreferrer";
+    link.textContent = "Website";
+    detail.append(link);
+  }
+  const modes = el("div", "modes");
+  MODES.forEach((item) => {
+    const mode = el("button", "mode" + (state.mode === item.id ? " on" : ""), item.label);
+    mode.type = "button";
+    mode.addEventListener("click", () => choose(court.id, item.id));
+    modes.append(mode);
+  });
+  detail.append(modes);
+  if (state.routing) detail.append(el("p", "meta", "Drawing routes…"));
+  (state.legs[state.mode] || []).forEach((leg) => appendLeg(detail, leg));
+  if (state.mode !== "transit") detail.append(publicTransitBlock(court.id));
+  return detail;
+}
+
+function publicTransitBlock(courtId) {
+  const how = el("div", "howto");
+  how.append(el("h3", "", "By public transit"));
+  const ready = state.transitFor === courtId;
+  const transitLegs = ready ? state.legs.transit || [] : [];
+  if ((!ready || state.transitLoading) && !transitLegs.length) {
+    how.append(el("p", "meta", "Looking up buses and metro…"));
+    return how;
+  }
+  if (!transitLegs.length) {
+    how.append(el("p", "meta", "No public transit route was found."));
+    return how;
+  }
+  transitLegs.forEach((leg) => {
+    const ride = el("div", "ride");
+    const title = el("p", "who", leg.name);
+    title.style.borderLeft = "8px solid " + leg.color;
+    title.style.paddingLeft = "8px";
+    ride.append(title);
+    if (leg.summary) ride.append(el("p", "blurb", leg.summary));
+    else ride.append(el("p", "meta", leg.minutes == null ? "No bus or metro route from this start." : "About " + formatMinutes(leg.minutes) + ". Amap did not list the stops."));
+    how.append(ride);
+  });
+  return how;
 }
 
 async function openSport(sport) {
@@ -728,6 +962,7 @@ async function legsFor(option, group, mode) {
       minutes: found ? found.minutes : null,
       km: found ? found.km : null,
       path: found ? found.path : [],
+      summary: found && found.summary ? found.summary : "",
     };
   }));
 }
@@ -795,10 +1030,14 @@ function pickByDensity(items, radiusKm, limit) {
 async function findCourts() {
   if (!state.sport || !state.you || !state.partners.length) return;
   state.scoring = true;
+  state.detailing = false;
   state.note = "";
   state.ranked = [];
   state.picked = null;
   state.legs = {};
+  state.transitFor = "";
+  state.transitLoading = false;
+  Object.keys(legJobs).forEach((key) => delete legJobs[key]);
   render();
   try {
     const group = people();
@@ -819,8 +1058,12 @@ async function findCourts() {
       away: km(frame.center, court.position),
       angle: Math.atan2(court.position[0] - frame.center[0], court.position[1] - frame.center[1]),
     })), frame.radiusKm, 24);
+    state.detailing = true;
+    render();
+    const detailed = await enrichCourts(shortlist);
+    state.detailing = false;
     const scored = [];
-    for (const court of shortlist) {
+    for (const court of detailed) {
       const drive = (await legsFor({ court: court }, group, "drive")).map((leg, index) => {
         if (leg.minutes != null) return leg;
         const distance = km(group[index].position, court.position);
@@ -852,14 +1095,45 @@ async function findCourts() {
       state.mode = "drive";
       state.legs = { drive: first.drive };
       state.labels = true;
+      state.transitFor = first.court.id;
+      state.transitLoading = true;
       drawMeeting(state.ranked, first.court.id, group, first.drive);
     }
   } catch (error) {
     state.note = "The map is still opening. Try again in a moment.";
   } finally {
     state.scoring = false;
+    state.detailing = false;
     render();
   }
+  const opened = state.ranked.find((item) => item.court.id === state.picked);
+  if (opened) ensurePublicTransit(opened);
+}
+
+function legJob(option, mode) {
+  if (mode === "drive") return Promise.resolve(option.drive);
+  const key = option.court.id + ":" + mode;
+  if (!legJobs[key]) legJobs[key] = legsFor(option, people(), mode);
+  return legJobs[key];
+}
+
+function ensurePublicTransit(option) {
+  const id = option.court.id;
+  if (state.legs.transit && state.transitFor === id && !state.transitLoading) return;
+  state.transitFor = id;
+  state.transitLoading = true;
+  legJob(option, "transit").then((legs) => {
+    if (state.picked !== id) return;
+    state.legs = { ...state.legs, transit: legs };
+    state.transitLoading = false;
+    if (state.mode === "transit") drawMeeting(state.ranked, id, people(), legs);
+    render();
+  }).catch(() => {
+    if (state.picked !== id) return;
+    state.transitLoading = false;
+    state.legs = { ...state.legs, transit: state.legs.transit || [] };
+    render();
+  });
 }
 
 async function choose(id, mode) {
@@ -868,21 +1142,35 @@ async function choose(id, mode) {
   const same = state.picked === id;
   state.picked = id;
   state.mode = mode;
-  if (!same) state.legs = { drive: option.drive };
+  if (!same) {
+    state.legs = { drive: option.drive };
+    state.transitFor = "";
+    state.transitLoading = false;
+  }
   const existing = mode === "drive" ? option.drive : state.legs[mode];
   if (existing) {
     state.legs = { ...state.legs, [mode]: existing };
     drawMeeting(state.ranked, id, people(), existing);
+    state.routing = false;
     render();
+    if (mode !== "transit") ensurePublicTransit(option);
     return;
   }
   state.routing = true;
   render();
-  const group = people();
-  const legs = await legsFor(option, group, mode);
+  if (mode !== "transit") ensurePublicTransit(option);
+  const legs = await legJob(option, mode);
+  if (state.picked !== id || state.mode !== mode) {
+    state.legs = { ...state.legs, [mode]: legs };
+    return;
+  }
   state.legs = { ...state.legs, [mode]: legs };
   state.routing = false;
-  drawMeeting(state.ranked, id, group, legs);
+  if (mode === "transit") {
+    state.transitFor = id;
+    state.transitLoading = false;
+  }
+  drawMeeting(state.ranked, id, people(), legs);
   render();
 }
 
