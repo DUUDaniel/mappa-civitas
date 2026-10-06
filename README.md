@@ -11,7 +11,7 @@ Amap covers mainland China best. Place names can be English or Chinese.
 3. Choose a sport: basketball, tennis, table tennis, badminton, golf, bowling, football, or go-karting.
 4. Add each partner before searching. Enter a name and a place, with the city if you know it, such as `Guomao, Beijing` or `国贸 北京`. The matched district is shown under the name so you can check it. A colored pin appears on the map as soon as the place is found.
 5. Press **Find courts by car**. The search does not start until the partners are in.
-6. Open a court. Car routes are drawn first. Then try **Light rail**, **Public**, **Walk**, or **Cycle**. Each person gets a time and a distance. A short description of the court is under the name.
+6. Open a court. Each result lists the type, address, hours, rating, cost, and phone when Amap has them. Car routes are drawn first. **By public transit** describes the bus or metro for each person: where to walk, which line to take, where to get off, and the fare. Then try **Light rail**, **Public**, **Walk**, or **Cycle**.
 
 ## How a court is chosen
 
