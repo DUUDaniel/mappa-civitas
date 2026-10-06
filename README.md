@@ -17,9 +17,9 @@ Amap covers mainland China best. Place names can be English or Chinese.
 
 The center is the Cartesian midpoint of you and every partner. Longitude and latitude are converted to a local east-north plane, with longitude scaled by \(\cos(\text{latitude})\), and then averaged.
 
-The outer circle stops at \(1.2\) times the distance from that center to the farthest person. If everyone is on the same pin, the radius is 3 km so a court can still be found.
+The outer circle stops at \(2\) times the distance from that center to the farthest person. If everyone is on the same pin, the radius is 3 km so a court can still be found.
 
-Inside that circle, courts are packed more tightly near the center and thin out in a straight line toward the edge. The disk is split into five rings. The list fills up to 20 courts, and stops early only if Amap has fewer than that inside the circle.
+Inside that circle, courts are packed more tightly near the center and thin out in a straight line toward the edge. The disk is split into five rings. The list fills up to 24 courts, and stops early only if Amap has fewer than that inside the circle.
 
 Those courts are then ordered by total driving time. If Amap does not return a driving route, the missing time is estimated from distance.
 

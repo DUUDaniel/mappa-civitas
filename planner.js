@@ -603,7 +603,7 @@ function render() {
   if (state.ranked.length) {
     const meetings = el("section", "stack split");
     meetings.append(el("h3", "", "Best by car"));
-    meetings.append(el("p", "lead", "Up to 20 courts. More near the middle of the group, fewer toward the edge. The edge is 1.2 times the farthest person from that middle."));
+    meetings.append(el("p", "lead", "Up to 24 courts. More near the middle of the group, fewer toward the edge. The edge is 2 times the farthest person from that middle."));
     const toggle = el("button", "ghost", state.labels ? "Hide the labels" : "Show the labels");
     toggle.type = "button";
     toggle.addEventListener("click", () => {
@@ -741,7 +741,7 @@ function groupFrame(group) {
   const y = ys.reduce((sum, value) => sum + value, 0) / group.length;
   const center = [x / scale, y / 111.32];
   const farthest = Math.max.apply(null, group.map((person) => km(center, person.position)));
-  return { center: center, radiusKm: farthest < 0.3 ? 3 : 1.2 * farthest };
+  return { center: center, radiusKm: farthest < 0.3 ? 3 : 2 * farthest };
 }
 
 function pickByDensity(items, radiusKm, limit) {
@@ -813,12 +813,12 @@ async function findCourts() {
       return found.filter((court) => km(frame.center, court.position) <= frame.radiusKm + 0.05);
     }
     let pool = await gather(state.sport.keyword);
-    if (pool.length < 20) pool = dedupe(pool.concat(await gather(state.sport.fallback)));
+    if (pool.length < 24) pool = dedupe(pool.concat(await gather(state.sport.fallback)));
     const shortlist = pickByDensity(pool.map((court) => ({
       court: court,
       away: km(frame.center, court.position),
       angle: Math.atan2(court.position[0] - frame.center[0], court.position[1] - frame.center[1]),
-    })), frame.radiusKm, 20);
+    })), frame.radiusKm, 24);
     const scored = [];
     for (const court of shortlist) {
       const drive = (await legsFor({ court: court }, group, "drive")).map((leg, index) => {
