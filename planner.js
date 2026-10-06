@@ -521,7 +521,7 @@ function ridePhrase(segment) {
   const vehicle = mode === "SUBWAY" || mode === "METRO_RAIL" ? "the metro" : mode === "RAILWAY" ? "the train" : mode === "BUS" ? "the bus" : "transit";
   if (!lineName && !on && !off) return segment.instruction || "";
   let sentence = lineName ? "Take " + lineName : "Take " + vehicle;
-  if (line.stime && line.etime) sentence += " (" + line.stime + "–" + line.etime + ")";
+  if (/\d/.test(line.stime || "") && /\d/.test(line.etime || "")) sentence += " (" + line.stime + "–" + line.etime + ")";
   if (on) sentence += " from " + on;
   if (entrance) sentence += ", " + entrance;
   if (via === 0) sentence += ", to the next stop";
@@ -865,6 +865,7 @@ function courtDetail(option) {
 function publicTransitBlock(courtId) {
   const how = el("div", "howto");
   how.append(el("h3", "", "By public transit"));
+  const option = state.ranked.find((item) => item.court.id === courtId);
   const ready = state.transitFor === courtId;
   const transitLegs = ready ? state.legs.transit || [] : [];
   if ((!ready || state.transitLoading) && !transitLegs.length) {
@@ -875,17 +876,25 @@ function publicTransitBlock(courtId) {
     how.append(el("p", "meta", "No public transit route was found."));
     return how;
   }
-  transitLegs.forEach((leg) => {
+  transitLegs.forEach((leg, index) => {
     const ride = el("div", "ride");
     const title = el("p", "who", leg.name);
     title.style.borderLeft = "8px solid " + leg.color;
     title.style.paddingLeft = "8px";
     ride.append(title);
-    if (leg.summary) ride.append(el("p", "blurb", leg.summary));
-    else ride.append(el("p", "meta", leg.minutes == null ? "No bus or metro route from this start." : "About " + formatMinutes(leg.minutes) + ". Amap did not list the stops."));
+    ride.append(el("p", leg.summary ? "blurb" : "meta", leg.summary || transitFallback(leg, option && option.drive[index])));
     how.append(ride);
   });
   return how;
+}
+
+function transitFallback(leg, drive) {
+  if (drive && drive.km != null && drive.km < 1.5) {
+    const walkMin = Math.max(1, Math.round((drive.km / 4.8) * 60));
+    return "No bus or metro is needed. Walk about " + walkMin + " min (" + drive.km.toFixed(1) + " km).";
+  }
+  if (leg.minutes == null) return "No bus or metro route from this start.";
+  return "About " + formatMinutes(leg.minutes) + ". Amap did not list the stops.";
 }
 
 async function openSport(sport) {
