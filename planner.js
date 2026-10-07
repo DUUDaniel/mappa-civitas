@@ -103,8 +103,20 @@ function bizOf(poi) {
 }
 
 function formatMinutes(minutes) {
-  if (minutes < 90) return minutes + " min";
-  return Math.round(minutes / 60) + " h";
+  const whole = Math.max(0, Math.round(Number(minutes) || 0));
+  if (whole < 60) return whole + " min";
+  const hours = Math.floor(whole / 60);
+  const rest = whole % 60;
+  return rest ? hours + " h " + rest + " min" : hours + " h";
+}
+
+function durationPhrase(minutes) {
+  const whole = Math.max(0, Math.round(Number(minutes) || 0));
+  if (whole < 60) return whole + (whole === 1 ? " minute" : " minutes");
+  const hours = Math.floor(whole / 60);
+  const rest = whole % 60;
+  const hourWord = hours === 1 ? " hour" : " hours";
+  return rest ? hours + hourWord + " " + rest + " min" : hours + hourWord;
 }
 
 function describeCourt(court, count, totalMinutes) {
@@ -112,7 +124,7 @@ function describeCourt(court, count, totalMinutes) {
   const place = [court.area, court.district, court.city].filter(Boolean).join(", ");
   const where = place || court.address || "the area around the group";
   const group = count === 1 ? "1 person" : count + " people";
-  const time = totalMinutes < 90 ? totalMinutes + " minutes" : Math.round(totalMinutes / 60) + " hours";
+  const time = durationPhrase(totalMinutes);
   let text = court.name + " is a " + kind + " in " + where + ".";
   if (court.hours) text += " Hours: " + court.hours + ".";
   if (court.rating) text += " Rated " + court.rating + " out of 5.";
@@ -212,10 +224,30 @@ function dedupe(courts) {
   });
 }
 
+function namedPlace(value) {
+  if (Array.isArray(value)) {
+    const text = value.find((item) => typeof item === "string" && item.trim() && item.trim() !== "[]");
+    return text ? text.trim() : "";
+  }
+  if (typeof value === "string") {
+    const text = value.trim();
+    return text && text !== "[]" ? text : "";
+  }
+  return "";
+}
+
+function cityOfPoi(poi) {
+  const city = namedPlace(poi.cityname) || namedPlace(poi.city);
+  if (city) return city;
+  const province = namedPlace(poi.province) || namedPlace(poi.pname);
+  if (/北京|上海|天津|重庆|香港|澳门/.test(province)) return province;
+  return "";
+}
+
 function readPoi(keyword, poi, index) {
-  const address = poi.address || "";
-  const city = poi.cityname || "";
-  const district = poi.adname || "";
+  const address = namedPlace(poi.address);
+  const city = cityOfPoi(poi);
+  const district = namedPlace(poi.adname);
   const full = address && city && address.includes(city) ? address : [city, district, address].filter(Boolean).join("");
   return {
     id: poi.id || keyword + index + (poi.location ? poi.location.lng : ""),
@@ -423,77 +455,224 @@ function nearbyCity(center) {
       resolve("");
       return;
     }
+    const timer = window.setTimeout(() => resolve(""), 8000);
     geocoder.getAddress(center, (status, result) => {
+      window.clearTimeout(timer);
       const part = status === "complete" && result.regeocode ? result.regeocode.addressComponent : null;
-      const city = part && typeof part.city === "string" && part.city ? part.city : part && part.province;
-      resolve(typeof city === "string" ? city : "");
+      if (!part) {
+        resolve("");
+        return;
+      }
+      resolve(namedPlace(part.city) || namedPlace(part.province));
     });
   }));
+}
+
+let routeQueue = Promise.resolve();
+
+function enqueueRoute(job) {
+  const run = routeQueue.then(job, job);
+  routeQueue = run.then(() => undefined, () => undefined);
+  return run;
+}
+
+const cityCache = {};
+
+function cityKey(position) {
+  return Math.round(position[0] * 1000) / 1000 + "," + Math.round(position[1] * 1000) / 1000;
+}
+
+function cachedCity(position) {
+  const key = cityKey(position);
+  if (!cityCache[key]) cityCache[key] = nearbyCity(position);
+  return cityCache[key];
+}
+
+function citiesMatch(a, b) {
+  const left = namedPlace(a).replace(/市$/, "");
+  const right = namedPlace(b).replace(/市$/, "");
+  if (!left || !right) return true;
+  return left === right || left.includes(right) || right.includes(left);
+}
+
+function secondsOf(value) {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? number : 0;
+}
+
+function plausibleSeconds(seconds, meters, maxKmh) {
+  if (!seconds) return 0;
+  if (meters > 800) {
+    const kmh = (meters / 1000) / (seconds / 3600);
+    if (kmh > maxKmh) return 0;
+  }
+  return seconds;
+}
+
+function minutesFrom(seconds, meters, speedKmh) {
+  let minutes = seconds > 0 ? seconds / 60 : 0;
+  if (minutes < 1 && meters > 0 && speedKmh > 0) minutes = (meters / 1000 / speedKmh) * 60;
+  if (!minutes) return null;
+  return Math.max(1, Math.round(minutes));
+}
+
+function clockText(value) {
+  const text = namedPlace(value);
+  const compact = text.match(/^(\d{2})(\d{2})$/);
+  if (compact) return compact[1] + ":" + compact[2];
+  return text;
+}
+
+function drivingPolicy(traffic) {
+  const policies = (window.AMap && window.AMap.DrivingPolicy) || {};
+  if (traffic && policies.REAL_TRAFFIC != null) return policies.REAL_TRAFFIC;
+  if (policies.LEAST_TIME != null) return policies.LEAST_TIME;
+  return traffic ? 4 : 0;
+}
+
+function transferPolicy() {
+  const policies = (window.AMap && window.AMap.TransferPolicy) || {};
+  // 0 is LEAST_TIME. 5 is NO_SUBWAY, which drops the metro and reports the wrong ride.
+  return policies.LEAST_TIME != null ? policies.LEAST_TIME : 0;
 }
 
 function pathOf(route) {
   return (route.steps || []).flatMap((step) => step.path || []);
 }
 
-function oneLeg(mode, origin, destination, city) {
+function readRoute(route, speedKmh) {
+  if (!route) return null;
+  const distance = Number(route.distance) || 0;
+  const stepSeconds = (route.steps || []).reduce((sum, step) => sum + secondsOf(step.time), 0);
+  let seconds = plausibleSeconds(secondsOf(route.time), distance, 140);
+  if (!seconds) seconds = plausibleSeconds(stepSeconds, distance, 140);
+  const minutes = minutesFrom(seconds, distance, speedKmh);
+  if (minutes == null || !distance) return null;
+  return { minutes: minutes, km: distance / 1000, path: pathOf(route) };
+}
+
+function searchService(create, read, timeout) {
   return new Promise((resolve) => {
-    const start = new window.AMap.LngLat(origin[0], origin[1]);
-    const end = new window.AMap.LngLat(destination[0], destination[1]);
-    const timer = window.setTimeout(() => resolve(null), 15000);
-    const done = (status, result, read) => {
+    const timer = window.setTimeout(() => resolve(null), timeout || 12000);
+    create((status, result) => {
       window.clearTimeout(timer);
       if (status !== "complete") {
         resolve(null);
         return;
       }
       resolve(read(result));
-    };
-    if (mode === "drive") {
-      new window.AMap.Driving().search(start, end, (status, result) => done(status, result, (value) => {
-        const route = value.routes && value.routes[0];
-        if (!route || !route.distance) return null;
-        return { minutes: Math.max(1, Math.round((route.time || 0) / 60)), km: route.distance / 1000, path: pathOf(route) };
-      }));
-      return;
-    }
-    if (mode === "walk") {
-      new window.AMap.Walking().search(start, end, (status, result) => done(status, result, (value) => {
-        const route = value.routes && value.routes[0];
-        if (!route || !route.distance) return null;
-        return { minutes: Math.max(1, Math.round((route.time || 0) / 60)), km: route.distance / 1000, path: pathOf(route) };
-      }));
-      return;
-    }
-    if (mode === "cycle") {
-      new window.AMap.Riding().search(start, end, (status, result) => done(status, result, (value) => {
-        const route = value.routes && value.routes[0];
-        if (!route || !route.distance) return null;
-        return { minutes: Math.max(1, Math.round((route.time || 0) / 60)), km: route.distance / 1000, path: pathOf(route) };
-      }));
-      return;
-    }
-    const policy = mode === "transit" ? 5 : 0;
-    new window.AMap.Transfer({ city: city || "全国", policy: policy }).search(start, end, (status, result) => {
-      const plans = status === "complete" && result.plans ? result.plans : [];
-      const rail = plans.filter((plan) => /地铁|轻轨|磁悬|有轨|轨道/.test(JSON.stringify(plan.segments || [])));
-      const plan = mode === "rail" ? rail.sort((a, b) => (a.time || 0) - (b.time || 0))[0] : plans[0];
-      if (!plan && mode === "transit") {
-        new window.AMap.Transfer({ city: city || "全国" }).search(start, end, (nextStatus, nextResult) => {
-          const next = nextStatus === "complete" && nextResult.plans ? nextResult.plans[0] : null;
-          window.clearTimeout(timer);
-          resolve(next ? readPlan(next) : null);
-        });
-        return;
-      }
-      window.clearTimeout(timer);
-      resolve(plan ? readPlan(plan) : null);
     });
   });
 }
 
+function searchDriving(start, end, traffic) {
+  return searchService((done) => {
+    new window.AMap.Driving({ policy: drivingPolicy(traffic) }).search(start, end, done);
+  }, (result) => {
+    const routes = (result && result.routes) || [];
+    const route = routes.slice().sort((a, b) => (secondsOf(a.time) || 1e12) - (secondsOf(b.time) || 1e12))[0];
+    return readRoute(route, 28);
+  });
+}
+
+function segmentMode(segment) {
+  return String(segment.transit_mode || segment.transitMode || "").toUpperCase();
+}
+
+function isRailMode(mode) {
+  return mode === "SUBWAY" || mode === "METRO_RAIL" || mode === "RAILWAY";
+}
+
+function lineNames(transit) {
+  const names = [];
+  const push = (name) => {
+    const text = namedPlace(name);
+    if (text && names.indexOf(text) === -1) names.push(text);
+  };
+  listOf(transit.lines).forEach((line) => push(line && line.name));
+  push(transit.name);
+  return names.slice(0, 2);
+}
+
+function planHasRail(plan) {
+  return ((plan && plan.segments) || []).some((segment) => {
+    const mode = segmentMode(segment);
+    if (isRailMode(mode)) return true;
+    const transit = segment.transit || {};
+    return lineNames(transit).some((name) => /地铁|轻轨|磁悬|有轨|轨道|市郊铁路/.test(name)) || /地铁|轻轨|有轨|磁悬/.test(namedPlace((listOf(transit.lines)[0] || {}).type));
+  });
+}
+
+function planHasTransit(plan) {
+  return ((plan && plan.segments) || []).some((segment) => {
+    const mode = segmentMode(segment);
+    return mode === "BUS" || isRailMode(mode);
+  });
+}
+
+function choosePlan(plans, mode) {
+  const list = plans || [];
+  if (mode === "rail") return list.filter(planHasRail).sort((a, b) => planScore(a) - planScore(b))[0] || null;
+  const transit = list.filter(planHasTransit);
+  const pool = transit.length ? transit : list;
+  return pool.slice().sort((a, b) => planScore(a) - planScore(b))[0] || null;
+}
+
+function planScore(plan) {
+  return secondsOf(plan.time) || Number.MAX_SAFE_INTEGER;
+}
+
+async function transitCities(origin, destination, hinted) {
+  const dest = namedPlace(hinted) || await cachedCity(destination);
+  const start = await cachedCity(origin);
+  return {
+    city: namedPlace(start) || namedPlace(dest),
+    cityd: citiesMatch(start, dest) ? "" : namedPlace(dest),
+  };
+}
+
+function searchTransfer(origin, destination, hinted, mode) {
+  const start = new window.AMap.LngLat(origin[0], origin[1]);
+  const end = new window.AMap.LngLat(destination[0], destination[1]);
+  return transitCities(origin, destination, hinted).then((where) => {
+    if (!where.city) return null;
+    const options = { city: where.city, policy: transferPolicy(), nightflag: true };
+    if (where.cityd) options.cityd = where.cityd;
+    return searchService((done) => {
+      new window.AMap.Transfer(options).search(start, end, done);
+    }, (result) => {
+      const plan = choosePlan(result && result.plans, mode);
+      return plan ? readPlan(plan) : null;
+    });
+  });
+}
+
+function oneLeg(mode, origin, destination, city) {
+  return enqueueRoute(() => queryLeg(mode, origin, destination, city));
+}
+
+function queryLeg(mode, origin, destination, city) {
+  const start = new window.AMap.LngLat(origin[0], origin[1]);
+  const end = new window.AMap.LngLat(destination[0], destination[1]);
+  if (mode === "drive") {
+    return searchDriving(start, end, true).then((found) => found || searchDriving(start, end, false));
+  }
+  if (mode === "walk") {
+    return searchService((done) => {
+      new window.AMap.Walking().search(start, end, done);
+    }, (result) => readRoute(result && result.routes && result.routes[0], 4.5));
+  }
+  if (mode === "cycle") {
+    return searchService((done) => {
+      new window.AMap.Riding().search(start, end, done);
+    }, (result) => readRoute(result && result.routes && result.routes[0], 14));
+  }
+  return searchTransfer(origin, destination, city, mode);
+}
+
 function metersText(meters) {
   if (!meters) return "";
-  return meters >= 1000 ? (meters / 1000).toFixed(1) + " km" : Math.round(meters) + " m";
+  return meters >= 1000 ? (Math.round(meters / 100) / 10) + " km" : Math.round(meters) + " m";
 }
 
 function listOf(value) {
@@ -501,33 +680,51 @@ function listOf(value) {
   return Array.isArray(value) ? value : [value];
 }
 
+function stopName(stop) {
+  if (!stop) return "";
+  if (typeof stop === "string") return namedPlace(stop);
+  return namedPlace(stop.name);
+}
+
 function walkPhrase(segment) {
-  const meters = segment.distance || 0;
-  if (meters < 60) return "";
-  const minutes = Math.max(1, Math.round((segment.time || 0) / 60));
-  return "Walk " + metersText(meters) + " (" + minutes + " min)";
+  const walking = segment.walking || {};
+  const details = segmentMode(segment) === "WALK" ? segment.transit || {} : {};
+  const steps = listOf(walking.steps || details.steps);
+  const meters = Number(segment.distance || walking.distance || details.distance) || steps.reduce((sum, step) => sum + (Number(step.distance) || 0), 0);
+  if (meters < 40) return "";
+  const stepSeconds = steps.reduce((sum, step) => sum + secondsOf(step.time), 0);
+  const seconds = plausibleSeconds(secondsOf(segment.time) || secondsOf(walking.time) || secondsOf(details.time) || stepSeconds, meters, 12);
+  const minutes = minutesFrom(seconds, meters, 4.5);
+  return "Walk " + metersText(meters) + (minutes ? " (" + formatMinutes(minutes) + ")" : "");
 }
 
 function ridePhrase(segment) {
   const transit = segment.transit || {};
-  const mode = segment.transit_mode || "";
+  const mode = segmentMode(segment);
+  const names = lineNames(transit);
   const line = listOf(transit.lines)[0] || {};
-  const lineName = line.name || "";
-  const on = transit.on_station && transit.on_station.name;
-  const off = transit.off_station && transit.off_station.name;
-  const via = typeof transit.via_num === "number" ? transit.via_num : null;
-  const entrance = transit.entrance && transit.entrance.name;
-  const exit = transit.exit && transit.exit.name;
-  const vehicle = mode === "SUBWAY" || mode === "METRO_RAIL" ? "the metro" : mode === "RAILWAY" ? "the train" : mode === "BUS" ? "the bus" : "transit";
-  if (!lineName && !on && !off) return segment.instruction || "";
-  let sentence = lineName ? "Take " + lineName : "Take " + vehicle;
-  if (/\d/.test(line.stime || "") && /\d/.test(line.etime || "")) sentence += " (" + line.stime + "–" + line.etime + ")";
+  const on = stopName(transit.on_station || transit.departure_stop);
+  const off = stopName(transit.off_station || transit.arrival_stop);
+  const via = Number(transit.via_num);
+  const viaKnown = Number.isFinite(via) && via >= 0;
+  const entrance = stopName(transit.entrance);
+  const exit = stopName(transit.exit);
+  const meters = Number(segment.distance) || 0;
+  const minutes = minutesFrom(plausibleSeconds(secondsOf(segment.time), meters, 120), meters, isRailMode(mode) ? 32 : 18);
+  if (!names.length && !on && !off) return namedPlace(segment.instruction);
+  const railName = names.some((name) => /地铁|轻轨|磁悬|有轨|轨道/.test(name));
+  const vehicle = isRailMode(mode) || railName ? "metro" : mode === "RAILWAY" ? "train" : mode === "BUS" ? "bus" : "transit";
+  let sentence = names.length ? "Take " + names.join(" or ") : "Take the " + vehicle;
+  const open = clockText(line.stime);
+  const close = clockText(line.etime);
+  if (open && close) sentence += " (" + open + "–" + close + ")";
   if (on) sentence += " from " + on;
-  if (entrance) sentence += ", " + entrance;
-  if (via === 0) sentence += ", to the next stop";
-  else if (via != null) sentence += ", passing " + via + " stop" + (via === 1 ? "" : "s");
-  if (off) sentence += ", and get off at " + off;
-  if (exit) sentence += ", " + exit;
+  if (entrance) sentence += " (enter at " + entrance + ")";
+  if (off) sentence += " to " + off;
+  if (exit) sentence += " (leave through " + exit + ")";
+  if (viaKnown && via === 0) sentence += ", the next stop";
+  else if (viaKnown) sentence += ", " + via + " stop" + (via === 1 ? "" : "s") + " in between";
+  if (minutes) sentence += ", " + formatMinutes(minutes);
   return sentence;
 }
 
@@ -535,14 +732,20 @@ function summarizePlan(plan) {
   const segments = (plan && plan.segments) || [];
   const parts = [];
   segments.forEach((segment) => {
-    const mode = segment.transit_mode || "";
-    if (mode === "WALK") {
+    const mode = segmentMode(segment);
+    if (mode === "WALK" || (!mode && segment.walking)) {
       const phrase = walkPhrase(segment);
       if (phrase) parts.push(phrase);
       return;
     }
     if (mode === "TAXI") {
-      parts.push("Continue by taxi");
+      const taxi = segment.transit || {};
+      const meters = Number(segment.distance || taxi.distance) || 0;
+      const minutes = minutesFrom(plausibleSeconds(secondsOf(segment.time || taxi.time), meters, 120), meters, 25);
+      const bits = ["Taxi"];
+      if (meters) bits.push(metersText(meters));
+      if (minutes) bits.push(formatMinutes(minutes));
+      parts.push(bits.join(", ").replace("Taxi, ", "Taxi "));
       return;
     }
     const ride = ridePhrase(segment);
@@ -551,10 +754,14 @@ function summarizePlan(plan) {
   let text = parts.join(". ");
   if (text && !/[.。]$/.test(text)) text += ".";
   const extras = [];
-  if (plan && plan.cost) extras.push("Fare about ¥" + plan.cost);
-  if (plan && plan.walking_distance) extras.push("walking " + metersText(plan.walking_distance));
+  const fare = Number(plan && plan.cost);
+  if (fare > 0) extras.push("fare about ¥" + (Math.round(fare * 10) / 10));
+  const walked = Number(plan && plan.walking_distance) || 0;
+  if (walked >= 40) extras.push("walking " + metersText(walked) + " in total");
   if (extras.length) text += (text ? " " : "") + extras.join(", ") + ".";
-  if (!text) text = segments.map((segment) => segment.instruction).filter(Boolean).join(" ");
+  if (!text) text = segments.map((segment) => namedPlace(segment.instruction)).filter(Boolean).join(" ");
+  const total = minutesFrom(plausibleSeconds(secondsOf(plan && plan.time), Number(plan && plan.distance) || 0, 80), 0, 0);
+  if (total) text = formatMinutes(total) + " total" + (text ? ". " + text : ".");
   return text;
 }
 
@@ -562,13 +769,21 @@ function readPlan(plan) {
   const path = [];
   (plan.segments || []).forEach((segment) => {
     const transit = segment.transit || {};
-    if (transit.path) path.push(...transit.path);
-    ((transit.steps) || (segment.walking && segment.walking.steps) || []).forEach((step) => path.push(...(step.path || [])));
+    const walking = segment.walking || {};
+    const direct = transit.path || walking.path;
+    if (direct && direct.length) {
+      path.push.apply(path, direct);
+      return;
+    }
+    listOf(transit.steps || walking.steps).forEach((step) => path.push.apply(path, step.path || []));
   });
-  if (!plan.time && !plan.distance) return null;
+  if (plan.path && plan.path.length && !path.length) path.push.apply(path, plan.path);
+  const distance = Number(plan.distance) || 0;
+  const minutes = minutesFrom(plausibleSeconds(secondsOf(plan.time), distance, 80), distance, 20);
+  if (minutes == null) return null;
   return {
-    minutes: Math.max(1, Math.round((plan.time || 0) / 60)),
-    km: (plan.distance || 0) / 1000,
+    minutes: minutes,
+    km: distance / 1000,
     path: path,
     summary: summarizePlan(plan),
   };
@@ -964,7 +1179,7 @@ async function addPartner(name, place) {
 
 async function legsFor(option, group, mode) {
   return Promise.all(group.map(async (person, index) => {
-    const found = await oneLeg(mode, person.position, option.court.position, option.court.city);
+    const found = await oneLeg(mode, person.position, option.court.position, namedPlace(option.court.city));
     return {
       name: person.name,
       color: COLORS[index % COLORS.length],
@@ -1076,11 +1291,12 @@ async function findCourts() {
       const drive = (await legsFor({ court: court }, group, "drive")).map((leg, index) => {
         if (leg.minutes != null) return leg;
         const distance = km(group[index].position, court.position);
+        const roadKm = distance * 1.35;
         return {
           name: leg.name,
           color: leg.color,
-          minutes: Math.max(1, Math.round((distance / 35) * 60)),
-          km: distance,
+          minutes: Math.max(1, Math.round((roadKm / 24) * 60)),
+          km: roadKm,
           path: [],
           estimated: true,
         };
